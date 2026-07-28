@@ -33,52 +33,21 @@
   .tab-btn.active { background: var(--card); color: var(--text); border-color: var(--accent); }
   .tab-panel { display: none; }
   .tab-panel.active { display: block; }
-  .grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-    gap: 16px;
-  }
-  .card {
-    background: var(--card);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 16px;
-  }
-  .card-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: baseline;
-    margin-bottom: 12px;
-  }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
+  .card-header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 12px; }
   .hostname { font-weight: 600; font-size: 15px; }
   .site { color: var(--muted); font-size: 12px; }
   .modules { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
-  .module-row {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    font-size: 13px;
-    padding: 6px 8px;
-    border-radius: 6px;
-    background: rgba(255,255,255,0.02);
-  }
-  .dot {
-    width: 9px; height: 9px; border-radius: 50%;
-    display: inline-block; margin-right: 8px;
-  }
+  .module-row { display: flex; justify-content: space-between; align-items: center; font-size: 13px; padding: 6px 8px; border-radius: 6px; background: rgba(255,255,255,0.02); }
+  .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; margin-right: 8px; }
   .dot.green { background: var(--green); box-shadow: 0 0 6px var(--green); }
   .dot.red { background: var(--red); box-shadow: 0 0 6px var(--red); }
   .dot.amber { background: var(--amber); box-shadow: 0 0 6px var(--amber); }
-  .module-name { display: flex; align-items: center; }
-  .timestamp { color: var(--muted); font-size: 11px; }
-  .empty { color: var(--muted); padding: 40px; text-align: center; }
   .cmd-row { display: flex; gap: 6px; flex-wrap: wrap; border-top: 1px solid var(--border); padding-top: 10px; }
-  .cmd-btn {
-    background: rgba(91,141,239,0.12); border: 1px solid var(--accent); color: var(--accent);
-    padding: 4px 10px; border-radius: 6px; font-size: 11px; cursor: pointer;
-  }
-  .cmd-btn:hover { background: rgba(91,141,239,0.25); }
-  .cmd-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .cmd-btn { background: rgba(91,141,239,0.12); border: 1px solid var(--accent); color: var(--accent); padding: 4px 10px; border-radius: 6px; font-size: 11px; cursor: pointer; }
+  .cmd-btn.danger { border-color: var(--red); color: var(--red); background: rgba(229,72,77,0.12); }
+  .cmd-btn:hover { opacity: 0.8; }
   .cmd-status { font-size: 11px; color: var(--muted); margin-top: 6px; min-height: 14px; }
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
   th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); }
@@ -87,7 +56,16 @@
   .badge.online { background: rgba(51,192,125,0.15); color: var(--green); }
   .badge.offline { background: rgba(229,72,77,0.15); color: var(--red); }
   .alert-row { border-left: 3px solid var(--red); padding: 10px 14px; margin-bottom: 8px; background: var(--card); border-radius: 0 8px 8px 0; }
-  .alert-meta { color: var(--muted); font-size: 12px; margin-top: 4px; }
+  
+  /* Timeline CSS */
+  .timeline-container { margin-top: 20px; border-left: 3px solid var(--accent); padding-left: 20px; }
+  .timeline-card { background: var(--card); color: #fff; border-radius: 6px; padding: 15px; margin-bottom: 15px; position: relative; border: 1px solid var(--border); }
+  .timeline-card::before { content: ''; position: absolute; left: -27px; top: 18px; width: 10px; height: 10px; border-radius: 50%; background: var(--accent); }
+  .timeline-card.alert-card::before { background: var(--red); }
+  .timeline-time { font-size: 0.85em; color: var(--muted); }
+  .timeline-cmd { background: #0f0f1a; padding: 8px; font-family: monospace; border-radius: 4px; word-break: break-all; margin-top: 8px; }
+  .filter-bar { display: flex; gap: 10px; margin-bottom: 15px; }
+  .filter-bar input { background: var(--card); border: 1px solid var(--border); color: #fff; padding: 8px; border-radius: 6px; }
 </style>
 </head>
 <body>
@@ -98,6 +76,7 @@
     <button class="tab-btn active" data-tab="status">Live Status</button>
     <button class="tab-btn" data-tab="inventory">Inventory</button>
     <button class="tab-btn" data-tab="alerts">Recent Alerts</button>
+    <button class="tab-btn" data-tab="timeline">Timeline Analysis</button>
   </div>
 
   <div class="tab-panel active" id="tab-status">
@@ -105,7 +84,7 @@
   </div>
 
   <div class="tab-panel" id="tab-inventory">
-    <table id="inventory-table">
+    <table>
       <thead>
         <tr><th>Hostname</th><th>Site</th><th>OS</th><th>Agent Version</th><th>Last Seen</th><th>Status</th></tr>
       </thead>
@@ -117,18 +96,21 @@
     <div id="alerts-list"></div>
   </div>
 
+  <div class="tab-panel" id="tab-timeline">
+    <h2>Root Cause Analysis & Event Timeline</h2>
+    <div class="filter-bar">
+      <input type="text" id="target-host" placeholder="Hostname (e.g. WORKSTATION-1)">
+      <input type="number" id="target-pid" placeholder="PID (Optional)">
+      <button class="cmd-btn" onclick="loadTimeline()">Generate Timeline</button>
+    </div>
+    <div class="timeline-container" id="timeline-display">
+      <p class="subtitle">Enter a hostname above to trace execution history.</p>
+    </div>
+  </div>
+
   <script>
-    const MODULE_LABELS = {
-      defender: "Defender Hardening",
-      dns: "DNS Enforcement",
-      usb: "USB Lockdown",
-      process_monitor: "Process Monitor",
-      threat: "Threat Detections",
-    };
+    let adminKey = null;
 
-    let adminKey = null; // held in memory only for this session, never persisted
-
-    // ---------------------------------------------------------------- tabs
     document.querySelectorAll(".tab-btn").forEach(btn => {
       btn.addEventListener("click", () => {
         document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
@@ -138,31 +120,9 @@
       });
     });
 
-    function statusDot(moduleData) {
-      if (!moduleData) return '<span class="dot amber"></span>No data';
-      const summary = moduleData.summary || {};
-      let compliant = moduleData.compliant;
-      if (compliant === null || compliant === undefined) {
-        if (summary.non_compliant !== undefined) {
-          compliant = summary.non_compliant === 0;
-        }
-      }
-      const cls = compliant === true ? "green" : compliant === false ? "red" : "amber";
-      const label = compliant === true ? "OK" : compliant === false ? "Attention needed" : "Unknown";
-      return `<span class="dot ${cls}"></span>${label}`;
-    }
-
-    function parseTimestamp(ts) {
-      if (!ts) return null;
-      const hasTz = /Z$|[+-]\d{2}:\d{2}$/.test(ts);
-      const d = new Date(hasTz ? ts : ts + "Z");
-      return isNaN(d.getTime()) ? null : d;
-    }
-
-    // ---------------------------------------------------------- commands
     async function sendCommand(siteName, hostname, command, btn) {
       if (!adminKey) {
-        adminKey = prompt("Enter dashboard admin key to issue remote commands:");
+        adminKey = prompt("Enter dashboard admin key:");
         if (!adminKey) return;
       }
       btn.disabled = true;
@@ -174,131 +134,69 @@
           headers: { "Content-Type": "application/json", "X-Admin-Key": adminKey },
           body: JSON.stringify({ site_name: siteName, hostname: hostname, command: command }),
         });
-        if (res.status === 401) {
-          statusEl.textContent = "Invalid admin key.";
-          adminKey = null;
-        } else if (!res.ok) {
-          const detail = (await res.json()).detail || res.statusText;
-          statusEl.textContent = `Failed: ${detail}`;
-        } else {
-          statusEl.textContent = `Queued "${command}" — will run within a few minutes.`;
-        }
+        if (!res.ok) throw new Error(res.statusText);
+        statusEl.textContent = `Queued "${command}" successfully.`;
       } catch (e) {
-        statusEl.textContent = `Network error: ${e}`;
+        statusEl.textContent = `Error: ${e.message}`;
       } finally {
         btn.disabled = false;
       }
     }
 
-    // ------------------------------------------------------------ status
     async function loadStatus() {
       const res = await fetch("/api/status");
       const data = await res.json();
       const grid = document.getElementById("grid");
-      const subtitle = document.getElementById("subtitle");
+      if (!data.machines) return;
 
-      if (!data.machines || data.machines.length === 0) {
-        subtitle.textContent = "No reports received yet.";
-        grid.innerHTML = '<div class="empty">Waiting for agent check-ins...</div>';
-        return;
+      grid.innerHTML = data.machines.map(m => `
+        <div class="card">
+          <div class="card-header">
+            <span class="hostname">${m.hostname}</span>
+            <span class="site">${m.site_name}</span>
+          </div>
+          <div class="cmd-row">
+            <button class="cmd-btn" onclick="sendCommand('${m.site_name}','${m.hostname}','force_audit', this)">Force Audit</button>
+            <button class="cmd-btn danger" onclick="sendCommand('${m.site_name}','${m.hostname}','isolate_host', this)">Isolate Host</button>
+            <button class="cmd-btn" onclick="sendCommand('${m.site_name}','${m.hostname}','restore_network', this)">Restore Net</button>
+          </div>
+          <div class="cmd-status"></div>
+        </div>
+      `).join("");
+    }
+
+    async function loadTimeline() {
+      const host = document.getElementById('target-host').value;
+      const pid = document.getElementById('target-pid').value;
+      const container = document.getElementById('timeline-display');
+
+      if (!host) return alert("Please enter a hostname.");
+      container.innerHTML = "<p>Loading event telemetry...</p>";
+
+      let url = `/api/timeline/${host}`;
+      if (pid) url += `?target_pid=${pid}`;
+
+      try {
+        const res = await fetch(url);
+        const data = await res.json();
+        if (!data.timeline || data.timeline.length === 0) {
+          container.innerHTML = "<p>No events found.</p>";
+          return;
+        }
+
+        container.innerHTML = data.timeline.map(e => `
+          <div class="timeline-card ${e.event_type.includes("Alert") ? 'alert-card' : ''}">
+            <div class="timeline-time">${e.timestamp}</div>
+            <strong>${e.event_type}</strong> - ${e.process_name} (PID: ${e.pid})
+            ${e.command_line ? `<div class="timeline-cmd">${e.command_line}</div>` : ''}
+          </div>
+        `).join("");
+      } catch (err) {
+        container.innerHTML = `<p style="color:red">Failed: ${err.message}</p>`;
       }
-
-      subtitle.textContent = `${data.machines.length} machine(s) reporting`;
-
-      grid.innerHTML = data.machines.map(m => {
-        const rows = Object.keys(MODULE_LABELS).map(key => {
-          const mod = m.modules[key];
-          const parsed = mod ? parseTimestamp(mod.received_at) : null;
-          const ts = parsed ? parsed.toLocaleString() : (mod ? "Unknown time" : "");
-          return `
-            <div class="module-row">
-              <span class="module-name">${statusDot(mod)}&nbsp;&nbsp;${MODULE_LABELS[key]}</span>
-              <span class="timestamp">${ts}</span>
-            </div>`;
-        }).join("");
-
-        const siteAttr = m.site_name.replace(/"/g, "&quot;");
-        const hostAttr = m.hostname.replace(/"/g, "&quot;");
-
-        return `
-          <div class="card">
-            <div class="card-header">
-              <span class="hostname">${m.hostname}</span>
-              <span class="site">${m.site_name}</span>
-            </div>
-            <div class="modules">${rows}</div>
-            <div class="cmd-row">
-              <button class="cmd-btn" onclick="sendCommand('${siteAttr}','${hostAttr}','force_audit', this)">Force Audit Now</button>
-              <button class="cmd-btn" onclick="sendCommand('${siteAttr}','${hostAttr}','enable_enforcement', this)">Enable Enforcement</button>
-              <button class="cmd-btn" onclick="sendCommand('${siteAttr}','${hostAttr}','disable_enforcement', this)">Disable Enforcement</button>
-            </div>
-            <div class="cmd-status"></div>
-          </div>`;
-      }).join("");
     }
 
-    // --------------------------------------------------------- inventory
-    async function loadInventory() {
-      const res = await fetch("/api/inventory");
-      const data = await res.json();
-      const body = document.getElementById("inventory-body");
-
-      if (!data.devices || data.devices.length === 0) {
-        body.innerHTML = '<tr><td colspan="6" class="empty">No devices registered yet.</td></tr>';
-        return;
-      }
-
-      const now = Date.now();
-      body.innerHTML = data.devices.map(d => {
-        const lastSeen = parseTimestamp(d.last_seen);
-        const ageMs = lastSeen ? now - lastSeen.getTime() : Infinity;
-        const online = ageMs < 60 * 60 * 1000; // seen within the last hour
-        return `
-          <tr>
-            <td>${d.hostname}</td>
-            <td>${d.site_name}</td>
-            <td>${d.os || "-"}</td>
-            <td>${d.agent_version || "-"}</td>
-            <td>${lastSeen ? lastSeen.toLocaleString() : "Unknown"}</td>
-            <td><span class="badge ${online ? "online" : "offline"}">${online ? "Online" : "Offline"}</span></td>
-          </tr>`;
-      }).join("");
-    }
-
-    // ------------------------------------------------------------ alerts
-    async function loadAlerts() {
-      const res = await fetch("/api/status");
-      const data = await res.json();
-      const list = document.getElementById("alerts-list");
-
-      let alerts = [];
-      (data.machines || []).forEach(m => { alerts = alerts.concat(m.alerts || []); });
-      alerts.sort((a, b) => (parseTimestamp(b.time) || 0) - (parseTimestamp(a.time) || 0));
-      alerts = alerts.slice(0, 50);
-
-      if (alerts.length === 0) {
-        list.innerHTML = '<div class="empty">No threat detections reported.</div>';
-        return;
-      }
-
-      list.innerHTML = alerts.map(a => {
-        const t = parseTimestamp(a.time);
-        return `
-          <div class="alert-row">
-            <strong>${a.threat_name || "Unknown threat"}</strong> on <strong>${a.hostname}</strong> (${a.site_name})
-            <div class="alert-meta">Severity: ${a.severity || "?"} · Action: ${a.action || "?"} · ${t ? t.toLocaleString() : ""}</div>
-          </div>`;
-      }).join("");
-    }
-
-    function loadAll() {
-      loadStatus();
-      loadInventory();
-      loadAlerts();
-    }
-
-    loadAll();
-    setInterval(loadAll, 15000); // refresh every 15s
+    loadStatus();
   </script>
 </body>
 </html>
