@@ -37,16 +37,17 @@ DEVICES_PREFIX = "devices/"
 LATEST_SUFFIX = "/latest.json"
 
 ALLOWED_COMMANDS = {
-    "force_audit", 
-    "enable_enforcement", 
-    "disable_enforcement", 
-    "isolate_host", 
-    "restore_network", 
-    "kill_process"
+    "force_audit",
+    "enable_enforcement",
+    "disable_enforcement",
+    "isolate_host",
+    "restore_network",
+    "kill_process",  # accepted here, but command_executor.py doesn't act on it yet
 }
 
 _CACHE_TTL_SECS = 20
-_cache = {"data": None, "fetched_at": 0.0}
+_status_cache = {"data": None, "fetched_at": 0.0}
+_inventory_cache = {"data": None, "fetched_at": 0.0}
 
 
 def get_s3_client(commander=False):
@@ -81,6 +82,86 @@ def fetch_all_logs_from_bucket(prefix: str) -> list:
     return logs
 
 
+def fetch_all_latest_reports() -> list:
+    """List every reports/**/latest.json object and assemble per-machine,
+    per-module status — this is what actually drives the Live Status tab
+    and the Recent Alerts feed (threat module's detections)."""
+    client = get_s3_client()
+    if client is None:
+        return []
+
+    machines = {}
+    paginator = client.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=ORACLE_BUCKET, Prefix=REPORTS_PREFIX):
+        for obj in page.get("Contents", []):
+            key = obj["Key"]
+            if not key.endswith(LATEST_SUFFIX):
+                continue
+            # Key layout: reports/{site}/{hostname}/{module}/latest.json
+            parts = key[len(REPORTS_PREFIX):].split("/")
+            if len(parts) != 4:
+                continue
+            site_name, hostname, module, _ = parts
+
+            try:
+                body = client.get_object(Bucket=ORACLE_BUCKET, Key=key)["Body"].read()
+                payload = json.loads(body)
+            except Exception:
+                continue
+
+            mkey = (site_name, hostname)
+            if mkey not in machines:
+                machines[mkey] = {"site_name": site_name, "hostname": hostname, "modules": {}, "alerts": []}
+
+            summary = payload.get("summary", {})
+            machines[mkey]["modules"][module] = {
+                "received_at": payload.get("sent_at") or obj["LastModified"].isoformat(),
+                "summary": summary,
+                "compliant": payload.get("compliant", None),
+            }
+
+            if module == "threat":
+                for d in (payload.get("raw") or {}).get("detections", []):
+                    machines[mkey]["alerts"].append({
+                        "hostname": hostname,
+                        "site_name": site_name,
+                        "time": d.get("TimeCreated"),
+                        "threat_name": d.get("ThreatName"),
+                        "severity": d.get("Severity"),
+                        "action": d.get("ActionName"),
+                    })
+
+    return list(machines.values())
+
+
+def fetch_device_inventory() -> list:
+    """List every devices/{site}/{hostname}.json object — includes
+    machines that haven't reported recently, not just currently-live ones."""
+    client = get_s3_client()
+    if client is None:
+        return []
+    devices = []
+    paginator = client.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=ORACLE_BUCKET, Prefix=DEVICES_PREFIX):
+        for obj in page.get("Contents", []):
+            try:
+                body = client.get_object(Bucket=ORACLE_BUCKET, Key=obj["Key"])["Body"].read()
+                devices.append(json.loads(body))
+            except Exception:
+                continue
+    return devices
+
+
+def _get_cached(cache: dict, fetch_fn):
+    now = time.time()
+    if cache["data"] is not None and (now - cache["fetched_at"]) < _CACHE_TTL_SECS:
+        return cache["data"]
+    data = fetch_fn()
+    cache["data"] = data
+    cache["fetched_at"] = now
+    return data
+
+
 # ---------------------------------------------------------------------------
 # API Routes
 # ---------------------------------------------------------------------------
@@ -98,11 +179,11 @@ async def get_endpoint_timeline(hostname: str, target_pid: Optional[int] = None)
     """Renders historical events chronologically."""
     raw_logs = fetch_all_logs_from_bucket(prefix=f"{LOGS_PREFIX}{hostname}")
     timeline_events = []
-    
+
     for log in raw_logs:
         pid = log.get("pid") or log.get("ProcessId")
         parent_pid = log.get("parent_pid") or log.get("ParentProcessId")
-        
+
         if target_pid and pid != target_pid and parent_pid != target_pid:
             continue
 
@@ -122,7 +203,14 @@ async def get_endpoint_timeline(hostname: str, target_pid: Optional[int] = None)
 
 @app.get("/api/status")
 async def get_status():
-    return JSONResponse(content={"machines": []})  # Connects to cached S3 fetch
+    machines = _get_cached(_status_cache, fetch_all_latest_reports)
+    return JSONResponse(content={"machines": machines})
+
+
+@app.get("/api/inventory")
+async def get_inventory():
+    devices = _get_cached(_inventory_cache, fetch_device_inventory)
+    return JSONResponse(content={"devices": devices})
 
 
 @app.post("/api/command")
@@ -147,6 +235,18 @@ async def issue_command(request: Request, x_admin_key: Optional[str] = Header(No
     return {"status": "queued", "hostname": hostname, "command": command}
 
 
+@app.get("/health")
+async def health():
+    configured = bool(ORACLE_S3_ENDPOINT and ORACLE_ACCESS_KEY and ORACLE_SECRET_KEY and ORACLE_BUCKET)
+    commander_configured = bool(ORACLE_COMMANDER_ACCESS_KEY and ORACLE_COMMANDER_SECRET_KEY and DASHBOARD_ADMIN_KEY)
+    return {"status": "ok", "oracle_configured": configured, "remote_commands_configured": commander_configured}
+
+
 @app.get("/", response_class=HTMLResponse)
 async def dashboard_page():
-    return Path("dashboard.html").read_text(encoding="utf-8")
+    # Absolute path relative to this file, not the process's current working
+    # directory — a bare "dashboard.html" only works if the server happens
+    # to be launched with cwd set to this exact folder, which isn't
+    # guaranteed across every hosting platform/deploy config.
+    html_path = Path(__file__).parent / "dashboard.html"
+    return html_path.read_text(encoding="utf-8")
