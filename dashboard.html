@@ -4,299 +4,793 @@
 <meta charset="UTF-8">
 <title>SME Security Dashboard</title>
 <style>
-  :root {
-    --bg: #0f1420;
-    --card: #161d2e;
-    --border: #263049;
-    --text: #e8ecf4;
-    --muted: #8b96ac;
-    --green: #33c07d;
-    --red: #e5484d;
-    --amber: #e5a94d;
-    --accent: #5b8def;
-  }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    background: var(--bg);
-    color: var(--text);
-    padding: 32px;
-  }
-  h1 { font-size: 20px; font-weight: 600; margin-bottom: 4px; }
-  .subtitle { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
-  .tabs { display: flex; gap: 8px; margin-bottom: 20px; }
-  .tab-btn {
-    background: transparent; border: 1px solid var(--border); color: var(--muted);
-    padding: 6px 14px; border-radius: 6px; font-size: 13px; cursor: pointer;
-  }
-  .tab-btn.active { background: var(--card); color: var(--text); border-color: var(--accent); }
-  .tab-panel { display: none; }
-  .tab-panel.active { display: block; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
-  .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
-  .card-header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 12px; }
-  .hostname { font-weight: 600; font-size: 15px; }
-  .site { color: var(--muted); font-size: 12px; }
-  .modules { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
-  .module-row { display: flex; justify-content: space-between; align-items: center; font-size: 13px; padding: 6px 8px; border-radius: 6px; background: rgba(255,255,255,0.02); }
-  .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; margin-right: 8px; }
-  .dot.green { background: var(--green); box-shadow: 0 0 6px var(--green); }
-  .dot.red { background: var(--red); box-shadow: 0 0 6px var(--red); }
-  .dot.amber { background: var(--amber); box-shadow: 0 0 6px var(--amber); }
-  .cmd-row { display: flex; gap: 6px; flex-wrap: wrap; border-top: 1px solid var(--border); padding-top: 10px; }
-  .cmd-btn { background: rgba(91,141,239,0.12); border: 1px solid var(--accent); color: var(--accent); padding: 4px 10px; border-radius: 6px; font-size: 11px; cursor: pointer; }
-  .cmd-btn.danger { border-color: var(--red); color: var(--red); background: rgba(229,72,77,0.12); }
-  .cmd-btn:hover { opacity: 0.8; }
-  .cmd-status { font-size: 11px; color: var(--muted); margin-top: 6px; min-height: 14px; }
-  table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); }
-  th { color: var(--muted); font-weight: 500; font-size: 12px; }
-  .badge { padding: 2px 8px; border-radius: 10px; font-size: 11px; }
-  .badge.online { background: rgba(51,192,125,0.15); color: var(--green); }
-  .badge.offline { background: rgba(229,72,77,0.15); color: var(--red); }
-  .alert-row { border-left: 3px solid var(--red); padding: 10px 14px; margin-bottom: 8px; background: var(--card); border-radius: 0 8px 8px 0; }
-  
-  /* Timeline CSS */
-  .timeline-container { margin-top: 20px; border-left: 3px solid var(--accent); padding-left: 20px; }
-  .timeline-card { background: var(--card); color: #fff; border-radius: 6px; padding: 15px; margin-bottom: 15px; position: relative; border: 1px solid var(--border); }
-  .timeline-card::before { content: ''; position: absolute; left: -27px; top: 18px; width: 10px; height: 10px; border-radius: 50%; background: var(--accent); }
-  .timeline-card.alert-card::before { background: var(--red); }
-  .timeline-time { font-size: 0.85em; color: var(--muted); }
-  .timeline-cmd { background: #0f0f1a; padding: 8px; font-family: monospace; border-radius: 4px; word-break: break-all; margin-top: 8px; }
-  .filter-bar { display: flex; gap: 10px; margin-bottom: 15px; }
-  .filter-bar input { background: var(--card); border: 1px solid var(--border); color: #fff; padding: 8px; border-radius: 6px; }
+:root{--bg:#0d1117;--surface:#161b22;--surface2:#21262d;--border:#30363d;--text:#e6edf3;--muted:#8b949e;--green:#3fb950;--red:#f85149;--amber:#d29922;--blue:#58a6ff;--purple:#bc8cff;--accent:#1f6feb;}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--text);min-height:100vh;}
+/* Topbar */
+.topbar{background:var(--surface);border-bottom:1px solid var(--border);padding:0 24px;display:flex;align-items:center;gap:32px;height:56px;position:sticky;top:0;z-index:100;}
+.topbar h1{font-size:15px;font-weight:600;white-space:nowrap;}
+.nav{display:flex;gap:2px;}
+.nav-btn{background:none;border:none;color:var(--muted);padding:6px 14px;border-radius:6px;cursor:pointer;font-size:13px;transition:all .15s;}
+.nav-btn:hover{background:var(--surface2);color:var(--text);}
+.nav-btn.active{background:var(--accent);color:#fff;}
+.topbar-right{margin-left:auto;display:flex;align-items:center;gap:10px;}
+.status-dot{width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 6px var(--green);}
+.subtitle{font-size:12px;color:var(--muted);}
+/* Main */
+.main{padding:24px;max-width:1400px;margin:0 auto;}
+.panel{display:none;}
+.panel.active{display:block;}
+/* Cards */
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px;}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:16px;}
+.card-header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px;}
+.hostname{font-weight:600;font-size:15px;}
+.site-tag{background:var(--surface2);color:var(--muted);font-size:11px;padding:2px 8px;border-radius:10px;}
+.modules{display:flex;flex-direction:column;gap:6px;margin-bottom:12px;}
+.mod-row{display:flex;justify-content:space-between;align-items:center;font-size:12px;padding:5px 8px;border-radius:6px;background:rgba(255,255,255,.02);}
+.dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:6px;flex-shrink:0;}
+.dot.green{background:var(--green);box-shadow:0 0 5px var(--green);}
+.dot.red{background:var(--red);box-shadow:0 0 5px var(--red);}
+.dot.amber{background:var(--amber);box-shadow:0 0 5px var(--amber);}
+.mod-left{display:flex;align-items:center;}
+.ts{color:var(--muted);font-size:10px;}
+/* Buttons */
+.btn-row{display:flex;gap:6px;flex-wrap:wrap;border-top:1px solid var(--border);padding-top:10px;margin-top:4px;}
+.btn{font-size:11px;padding:4px 10px;border-radius:6px;cursor:pointer;border:1px solid;transition:all .15s;font-family:inherit;}
+.btn:disabled{opacity:.4;cursor:not-allowed;}
+.btn-primary{background:rgba(31,111,235,.15);border-color:var(--accent);color:var(--blue);}
+.btn-primary:hover:not(:disabled){background:rgba(31,111,235,.3);}
+.btn-danger{background:rgba(248,81,73,.1);border-color:#f85149;color:var(--red);}
+.btn-danger:hover:not(:disabled){background:rgba(248,81,73,.25);}
+.btn-ghost{background:transparent;border-color:var(--border);color:var(--muted);}
+.btn-ghost:hover:not(:disabled){background:var(--surface2);color:var(--text);}
+.btn-success{background:rgba(63,185,80,.12);border-color:var(--green);color:var(--green);}
+.btn-success:hover:not(:disabled){background:rgba(63,185,80,.25);}
+.cmd-status{font-size:11px;color:var(--muted);margin-top:6px;min-height:14px;}
+/* Table */
+table{width:100%;border-collapse:collapse;font-size:13px;}
+th{text-align:left;padding:8px 12px;border-bottom:2px solid var(--border);color:var(--muted);font-weight:500;font-size:12px;white-space:nowrap;}
+td{padding:8px 12px;border-bottom:1px solid rgba(48,54,61,.6);vertical-align:middle;}
+tr:hover td{background:rgba(255,255,255,.02);}
+tr.clickable{cursor:pointer;}
+/* Badges */
+.badge{padding:2px 8px;border-radius:10px;font-size:11px;font-weight:500;}
+.badge-green{background:rgba(63,185,80,.15);color:var(--green);}
+.badge-red{background:rgba(248,81,73,.12);color:var(--red);}
+.badge-amber{background:rgba(210,153,34,.15);color:var(--amber);}
+.badge-blue{background:rgba(88,166,255,.12);color:var(--blue);}
+.badge-muted{background:var(--surface2);color:var(--muted);}
+/* Filters bar */
+.filter-bar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;align-items:center;}
+.filter-bar input,.filter-bar select{background:var(--surface);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:6px;font-size:12px;font-family:inherit;}
+.filter-bar input::placeholder{color:var(--muted);}
+/* Alert row */
+.alert-card{background:var(--surface);border:1px solid var(--border);border-left:3px solid var(--red);border-radius:0 8px 8px 0;padding:12px 16px;margin-bottom:8px;cursor:pointer;transition:background .15s;}
+.alert-card:hover{background:var(--surface2);}
+.alert-title{font-weight:600;font-size:14px;margin-bottom:4px;}
+.alert-meta{display:flex;gap:12px;font-size:12px;color:var(--muted);flex-wrap:wrap;}
+.alert-card.severity-critical{border-left-color:#f85149;}
+.alert-card.severity-high{border-left-color:#d29922;}
+.alert-card.severity-medium{border-left-color:var(--blue);}
+.alert-card.severity-low{border-left-color:var(--muted);}
+/* Modal */
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:200;display:flex;align-items:flex-start;justify-content:center;padding:40px 16px;overflow-y:auto;}
+.modal{background:var(--surface);border:1px solid var(--border);border-radius:12px;width:100%;max-width:900px;}
+.modal-header{display:flex;justify-content:space-between;align-items:center;padding:16px 20px;border-bottom:1px solid var(--border);}
+.modal-title{font-weight:600;font-size:16px;}
+.modal-close{background:none;border:none;color:var(--muted);font-size:20px;cursor:pointer;line-height:1;}
+.modal-body{padding:20px;}
+/* Device detail sub-tabs */
+.sub-tabs{display:flex;gap:2px;border-bottom:1px solid var(--border);margin-bottom:20px;}
+.sub-tab{background:none;border:none;color:var(--muted);padding:8px 16px;cursor:pointer;font-size:13px;border-bottom:2px solid transparent;margin-bottom:-1px;}
+.sub-tab.active{color:var(--blue);border-bottom-color:var(--blue);}
+.sub-panel{display:none;}
+.sub-panel.active{display:block;}
+/* Device props */
+.prop-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+.prop{background:var(--surface2);border-radius:8px;padding:12px;}
+.prop-label{font-size:11px;color:var(--muted);margin-bottom:4px;}
+.prop-value{font-size:14px;font-weight:500;}
+/* Timeline */
+.timeline-item{display:flex;gap:12px;padding:8px 0;border-bottom:1px solid rgba(48,54,61,.4);}
+.timeline-dot{width:8px;height:8px;border-radius:50%;background:var(--muted);flex-shrink:0;margin-top:5px;}
+.timeline-dot.threat{background:var(--red);}
+.timeline-dot.usb{background:var(--amber);}
+.timeline-dot.process_monitor{background:var(--blue);}
+.timeline-content{flex:1;min-width:0;}
+.timeline-time{font-size:11px;color:var(--muted);}
+.timeline-event{font-size:13px;margin-bottom:2px;}
+.timeline-detail{font-size:11px;color:var(--muted);font-family:monospace;word-break:break-all;}
+/* Enforcement */
+.scope-tabs{display:flex;gap:6px;margin-bottom:20px;}
+.scope-tab{background:var(--surface2);border:1px solid var(--border);color:var(--muted);padding:6px 16px;border-radius:6px;cursor:pointer;font-size:13px;}
+.scope-tab.active{background:var(--accent);border-color:var(--accent);color:#fff;}
+.policy-form{background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:16px;}
+.policy-form h3{font-size:14px;margin-bottom:12px;color:var(--text);}
+.form-row{display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid rgba(48,54,61,.4);}
+.form-row:last-child{border-bottom:none;}
+.form-label{font-size:13px;}
+.form-desc{font-size:11px;color:var(--muted);margin-top:2px;}
+.toggle{position:relative;width:36px;height:20px;flex-shrink:0;}
+.toggle input{opacity:0;width:0;height:0;}
+.toggle-slider{position:absolute;inset:0;background:var(--border);border-radius:20px;cursor:pointer;transition:.3s;}
+.toggle-slider:before{position:absolute;content:"";height:14px;width:14px;left:3px;bottom:3px;background:#fff;border-radius:50%;transition:.3s;}
+.toggle input:checked + .toggle-slider{background:var(--green);}
+.toggle input:checked + .toggle-slider:before{transform:translateX(16px);}
+.exemption-list{margin-top:8px;}
+.exemption-item{display:flex;justify-content:space-between;align-items:center;background:var(--surface);padding:6px 10px;border-radius:6px;margin-bottom:4px;font-size:12px;}
+.exemption-remove{background:none;border:none;color:var(--red);cursor:pointer;font-size:16px;line-height:1;}
+.add-exemption{display:flex;gap:6px;margin-top:8px;}
+.add-exemption input{flex:1;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:5px 8px;border-radius:6px;font-size:12px;}
+/* Empty state */
+.empty{text-align:center;padding:48px;color:var(--muted);}
+.empty svg{opacity:.3;margin-bottom:12px;}
+/* Scrollable */
+.scroll-table{overflow-x:auto;}
 </style>
 </head>
 <body>
-  <h1>SME Security Dashboard</h1>
-  <div class="subtitle" id="subtitle">Loading...</div>
+<div class="topbar">
+  <h1>SME Security</h1>
+  <nav class="nav">
+    <button class="nav-btn active" data-panel="status">Live Status</button>
+    <button class="nav-btn" data-panel="inventory">Inventory</button>
+    <button class="nav-btn" data-panel="alerts">Alerts</button>
+    <button class="nav-btn" data-panel="enforcement">Enforcement</button>
+  </nav>
+  <div class="topbar-right">
+    <span class="status-dot" id="conn-dot"></span>
+    <span class="subtitle" id="subtitle">Loading...</span>
+  </div>
+</div>
 
-  <div class="tabs">
-    <button class="tab-btn active" data-tab="status">Live Status</button>
-    <button class="tab-btn" data-tab="inventory">Inventory</button>
-    <button class="tab-btn" data-tab="alerts">Recent Alerts</button>
-    <button class="tab-btn" data-tab="timeline">Timeline Analysis</button>
+<div class="main">
+  <!-- STATUS -->
+  <div class="panel active" id="panel-status">
+    <div class="grid" id="status-grid"></div>
   </div>
 
-  <div class="tab-panel active" id="tab-status">
-    <div class="grid" id="grid"></div>
+  <!-- INVENTORY -->
+  <div class="panel" id="panel-inventory">
+    <div class="filter-bar">
+      <input id="inv-search" placeholder="Search hostname or site..." style="width:220px;">
+      <select id="inv-status-filter">
+        <option value="">All status</option>
+        <option value="online">Online</option>
+        <option value="offline">Offline</option>
+      </select>
+    </div>
+    <div class="scroll-table">
+      <table id="inv-table">
+        <thead><tr>
+          <th>Hostname</th><th>Site</th><th>OS</th>
+          <th>Agent Ver.</th><th>Modules</th><th>Last Seen</th><th>Status</th>
+        </tr></thead>
+        <tbody id="inv-body"></tbody>
+      </table>
+    </div>
   </div>
 
-  <div class="tab-panel" id="tab-inventory">
-    <table>
-      <thead>
-        <tr><th>Hostname</th><th>Site</th><th>OS</th><th>Agent Version</th><th>Last Seen</th><th>Status</th></tr>
-      </thead>
-      <tbody id="inventory-body"></tbody>
-    </table>
-  </div>
-
-  <div class="tab-panel" id="tab-alerts">
+  <!-- ALERTS -->
+  <div class="panel" id="panel-alerts">
+    <div class="filter-bar">
+      <input id="alert-search" placeholder="Search threat name..." style="width:200px;">
+      <select id="alert-status-filter">
+        <option value="">All statuses</option>
+        <option value="New">New</option>
+        <option value="Open">Open</option>
+        <option value="Closed">Closed</option>
+      </select>
+      <select id="alert-severity-filter">
+        <option value="">All severities</option>
+        <option value="CRITICAL">Critical</option>
+        <option value="HIGH">High</option>
+        <option value="MEDIUM">Medium</option>
+        <option value="LOW">Low</option>
+      </select>
+      <select id="alert-site-filter"><option value="">All sites</option></select>
+      <select id="alert-group-by">
+        <option value="none">No grouping</option>
+        <option value="device">Group by device</option>
+        <option value="type">Group by threat type</option>
+      </select>
+    </div>
     <div id="alerts-list"></div>
   </div>
 
-  <div class="tab-panel" id="tab-timeline">
-    <h2>Root Cause Analysis & Event Timeline</h2>
-    <div class="filter-bar">
-      <input type="text" id="target-host" placeholder="Hostname (e.g. WORKSTATION-1)">
-      <input type="number" id="target-pid" placeholder="PID (Optional)">
-      <button class="cmd-btn" onclick="loadTimeline()">Generate Timeline</button>
+  <!-- ENFORCEMENT -->
+  <div class="panel" id="panel-enforcement">
+    <div class="scope-tabs">
+      <button class="scope-tab active" data-scope="global">Global</button>
+      <button class="scope-tab" data-scope="site">By Site</button>
+      <button class="scope-tab" data-scope="machine">By Machine</button>
     </div>
-    <div class="timeline-container" id="timeline-display">
-      <p class="subtitle">Enter a hostname above to trace execution history.</p>
+    <div id="enforce-global" class="enforce-scope active">
+      <div class="policy-form" id="global-form"></div>
+      <button class="btn btn-primary" onclick="saveEnforcement('global')">Apply Global Policy</button>
+    </div>
+    <div id="enforce-site" class="enforce-scope" style="display:none;">
+      <div style="margin-bottom:12px;">
+        <select id="site-select" style="background:var(--surface);border:1px solid var(--border);color:var(--text);padding:6px 12px;border-radius:6px;font-size:13px;"></select>
+      </div>
+      <div class="policy-form" id="site-form"></div>
+      <button class="btn btn-primary" onclick="saveEnforcement('site')">Apply to Site</button>
+    </div>
+    <div id="enforce-machine" class="enforce-scope" style="display:none;">
+      <div style="margin-bottom:12px;display:flex;gap:8px;">
+        <select id="machine-site-select" style="background:var(--surface);border:1px solid var(--border);color:var(--text);padding:6px 12px;border-radius:6px;font-size:13px;" onchange="updateMachineList()"></select>
+        <select id="machine-select" style="background:var(--surface);border:1px solid var(--border);color:var(--text);padding:6px 12px;border-radius:6px;font-size:13px;"></select>
+      </div>
+      <div class="policy-form" id="machine-form"></div>
+      <button class="btn btn-primary" onclick="saveEnforcement('machine')">Apply to Machine</button>
     </div>
   </div>
+</div>
 
-  <script>
-    let adminKey = null;
+<!-- Device Detail Modal -->
+<div class="modal-overlay" id="device-modal" style="display:none;" onclick="closeModal(event)">
+  <div class="modal" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <span class="modal-title" id="modal-hostname">Device Details</span>
+      <button class="modal-close" onclick="closeDeviceModal()">&#x2715;</button>
+    </div>
+    <div class="modal-body">
+      <div class="sub-tabs">
+        <button class="sub-tab active" data-sub="properties">Properties</button>
+        <button class="sub-tab" data-sub="alerts">Alerts</button>
+        <button class="sub-tab" data-sub="apps">Installed Apps</button>
+        <button class="sub-tab" data-sub="timeline">Timeline</button>
+      </div>
+      <div class="sub-panel active" id="sub-properties"></div>
+      <div class="sub-panel" id="sub-alerts"></div>
+      <div class="sub-panel" id="sub-apps"></div>
+      <div class="sub-panel" id="sub-timeline"></div>
+    </div>
+  </div>
+</div>
 
-    const MODULE_LABELS = {
-      defender: "Defender Hardening",
-      dns: "DNS Enforcement",
-      usb: "USB Lockdown",
-      process_monitor: "Process Monitor",
-      threat: "Threat Detections",
-    };
+<!-- Alert Detail Modal -->
+<div class="modal-overlay" id="alert-modal" style="display:none;" onclick="closeModal(event)">
+  <div class="modal" style="max-width:600px;" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <span class="modal-title" id="alert-modal-title">Alert Detail</span>
+      <button class="modal-close" onclick="document.getElementById('alert-modal').style.display='none'">&#x2715;</button>
+    </div>
+    <div class="modal-body" id="alert-modal-body"></div>
+  </div>
+</div>
 
-    function statusDot(moduleData) {
-      if (!moduleData) return '<span class="dot amber"></span>No data';
-      const summary = moduleData.summary || {};
-      let compliant = moduleData.compliant;
-      if (compliant === null || compliant === undefined) {
-        if (summary.non_compliant !== undefined) compliant = summary.non_compliant === 0;
-      }
-      const cls = compliant === true ? "green" : compliant === false ? "red" : "amber";
-      const label = compliant === true ? "OK" : compliant === false ? "Attention needed" : "Unknown";
-      return `<span class="dot ${cls}"></span>${label}`;
-    }
+<script>
+// ---------------------------------------------------------------- State
+let adminKey = null;
+let allAlerts = [];
+let allDevices = [];
+let allMachines = [];
+let currentDevice = null;
 
-    function parseTimestamp(ts) {
-      if (!ts) return null;
-      const hasTz = /Z$|[+-]\d{2}:\d{2}$/.test(ts);
-      const d = new Date(hasTz ? ts : ts + "Z");
-      return isNaN(d.getTime()) ? null : d;
-    }
+// ---------------------------------------------------------------- Utils
+function parseTS(ts) {
+  if (!ts) return null;
+  const d = new Date(/Z$|[+-]\d{2}:\d{2}$/.test(ts) ? ts : ts + 'Z');
+  return isNaN(d) ? null : d;
+}
+function fmtTS(ts) { const d = parseTS(ts); return d ? d.toLocaleString() : ''; }
+function fmtAge(ts) {
+  const d = parseTS(ts); if (!d) return '';
+  const s = Math.floor((Date.now() - d) / 1000);
+  if (s < 60) return s + 's ago';
+  if (s < 3600) return Math.floor(s/60) + 'm ago';
+  if (s < 86400) return Math.floor(s/3600) + 'h ago';
+  return Math.floor(s/86400) + 'd ago';
+}
+function statusDot(mod) {
+  if (!mod) return '<span class="dot amber"></span>No data';
+  const s = mod.summary || {};
+  let ok = mod.compliant;
+  if (ok === null || ok === undefined) ok = s.non_compliant !== undefined ? s.non_compliant === 0 : undefined;
+  if (ok === true)  return '<span class="dot green"></span>OK';
+  if (ok === false) return '<span class="dot red"></span>Needs attention';
+  return '<span class="dot amber"></span>Unknown';
+}
+function severityBadge(sev) {
+  const s = (sev || '').toUpperCase();
+  const cls = s === 'CRITICAL' ? 'badge-red' : s === 'HIGH' ? 'badge-amber' : s === 'MEDIUM' ? 'badge-blue' : 'badge-muted';
+  return `<span class="badge ${cls}">${sev || '?'}</span>`;
+}
+function statusBadge(st) {
+  const cls = st === 'New' ? 'badge-red' : st === 'Open' ? 'badge-amber' : 'badge-muted';
+  return `<span class="badge ${cls}">${st}</span>`;
+}
 
-    function formatTimestamp(ts) {
-      const d = parseTimestamp(ts);
-      return d ? d.toLocaleString() : "Unknown time";
-    }
+async function api(path, opts = {}) {
+  const headers = { 'Content-Type': 'application/json', ...(opts.headers || {}) };
+  if (adminKey) headers['X-Admin-Key'] = adminKey;
+  const res = await fetch(path, { ...opts, headers });
+  return res;
+}
 
-    document.querySelectorAll(".tab-btn").forEach(btn => {
-      btn.addEventListener("click", () => {
-        document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
-        document.querySelectorAll(".tab-panel").forEach(p => p.classList.remove("active"));
-        btn.classList.add("active");
-        document.getElementById(`tab-${btn.dataset.tab}`).classList.add("active");
-      });
+function getAdminKey() {
+  if (!adminKey) adminKey = prompt('Enter dashboard admin key:');
+  return !!adminKey;
+}
+
+// ---------------------------------------------------------------- Nav
+document.querySelectorAll('.nav-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById('panel-' + btn.dataset.panel).classList.add('active');
+  });
+});
+
+// ---------------------------------------------------------------- STATUS
+const MOD_LABELS = {
+  defender: 'Defender Hardening', dns: 'DNS Enforcement', usb: 'USB Lockdown',
+  process_monitor: 'Process Monitor', threat: 'Threat Detections',
+};
+
+async function loadStatus() {
+  const res = await api('/api/status');
+  if (!res.ok) return;
+  const { machines } = await res.json();
+  allMachines = machines || [];
+  const grid = document.getElementById('status-grid');
+  document.getElementById('subtitle').textContent = `${allMachines.length} machine(s) reporting`;
+
+  if (!allMachines.length) {
+    grid.innerHTML = '<div class="empty">No machines reporting yet</div>'; return;
+  }
+  grid.innerHTML = allMachines.map(m => {
+    const rows = Object.entries(MOD_LABELS).map(([k, label]) => {
+      const mod = m.modules[k];
+      return `<div class="mod-row">
+        <span class="mod-left">${statusDot(mod)}&nbsp;${label}</span>
+        <span class="ts">${mod ? fmtAge(mod.received_at) : ''}</span>
+      </div>`;
+    }).join('');
+    const se = escAttr(m.site_name), he = escAttr(m.hostname);
+    return `<div class="card">
+      <div class="card-header">
+        <span class="hostname">${m.hostname}</span>
+        <span class="site-tag">${m.site_name}</span>
+      </div>
+      <div class="modules">${rows}</div>
+      <div class="btn-row">
+        <button class="btn btn-ghost" onclick="cmd('${se}','${he}','force_audit',this)">Force Audit</button>
+        <button class="btn btn-success" onclick="cmd('${se}','${he}','enable_enforcement',this)">Enable Enforce</button>
+        <button class="btn btn-ghost" onclick="cmd('${se}','${he}','disable_enforcement',this)">Disable Enforce</button>
+      </div>
+      <div class="btn-row">
+        <button class="btn btn-danger" onclick="cmd('${se}','${he}','isolate_host',this)">Isolate Host</button>
+        <button class="btn btn-primary" onclick="cmd('${se}','${he}','restore_network',this)">Restore Network</button>
+      </div>
+      <div class="cmd-status"></div>
+    </div>`;
+  }).join('');
+  // Populate site dropdowns
+  const sites = [...new Set(allMachines.map(m => m.site_name))];
+  ['site-select','machine-site-select'].forEach(id => {
+    const el = document.getElementById(id);
+    const cur = el.value;
+    el.innerHTML = sites.map(s => `<option${s===cur?' selected':''}>${s}</option>`).join('');
+  });
+  updateMachineList();
+}
+
+function escAttr(s) { return (s||'').replace(/'/g,"\\'").replace(/"/g,'&quot;'); }
+
+async function cmd(site, hostname, command, btn) {
+  if (!getAdminKey()) return;
+  btn.disabled = true;
+  const statusEl = btn.closest('.card').querySelector('.cmd-status');
+  statusEl.textContent = 'Sending...';
+  try {
+    const res = await api('/api/command', {
+      method: 'POST',
+      body: JSON.stringify({ site_name: site, hostname, command }),
     });
+    if (res.status === 401) { statusEl.textContent = 'Invalid admin key.'; adminKey = null; }
+    else if (!res.ok) { const d = await res.json(); statusEl.textContent = 'Error: ' + (d.detail || res.statusText); }
+    else statusEl.textContent = `"${command}" queued — will run within 5 min.`;
+  } catch(e) { statusEl.textContent = 'Network error: ' + e; }
+  finally { btn.disabled = false; }
+}
 
-    async function sendCommand(siteName, hostname, command, btn) {
-      if (!adminKey) {
-        adminKey = prompt("Enter dashboard admin key:");
-        if (!adminKey) return;
-      }
-      btn.disabled = true;
-      const statusEl = btn.closest(".card").querySelector(".cmd-status");
-      statusEl.textContent = "Sending...";
-      try {
-        const res = await fetch("/api/command", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "X-Admin-Key": adminKey },
-          body: JSON.stringify({ site_name: siteName, hostname: hostname, command: command }),
-        });
-        if (!res.ok) throw new Error(res.statusText);
-        statusEl.textContent = `Queued "${command}" successfully.`;
-      } catch (e) {
-        statusEl.textContent = `Error: ${e.message}`;
-      } finally {
-        btn.disabled = false;
-      }
-    }
+// ---------------------------------------------------------------- INVENTORY
+async function loadInventory() {
+  const res = await api('/api/inventory');
+  if (!res.ok) return;
+  const { devices } = await res.json();
+  allDevices = devices || [];
+  renderInventory();
+}
 
-    async function loadStatus() {
-      const res = await fetch("/api/status");
-      const data = await res.json();
-      const grid = document.getElementById("grid");
-      const subtitle = document.getElementById("subtitle");
-      if (!data.machines) return;
+function renderInventory() {
+  const search = document.getElementById('inv-search').value.toLowerCase();
+  const statusF = document.getElementById('inv-status-filter').value;
+  const now = Date.now();
+  let rows = allDevices.filter(d => {
+    const online = (parseTS(d.last_seen) && (now - parseTS(d.last_seen).getTime()) < 3600000);
+    if (statusF === 'online' && !online) return false;
+    if (statusF === 'offline' && online) return false;
+    if (search && !d.hostname?.toLowerCase().includes(search) && !d.site_name?.toLowerCase().includes(search)) return false;
+    return true;
+  });
+  const body = document.getElementById('inv-body');
+  if (!rows.length) { body.innerHTML = '<tr><td colspan="7" class="empty">No devices found</td></tr>'; return; }
+  body.innerHTML = rows.map(d => {
+    const online = parseTS(d.last_seen) && (now - parseTS(d.last_seen).getTime()) < 3600000;
+    const mods = (d.modules_reported || []).join(', ') || '-';
+    return `<tr class="clickable" onclick="openDeviceDetail('${escAttr(d.site_name)}','${escAttr(d.hostname)}')">
+      <td><strong>${d.hostname || '-'}</strong></td>
+      <td>${d.site_name || '-'}</td>
+      <td style="font-size:11px;color:var(--muted);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${(d.os||'-').split('-')[0]}</td>
+      <td><span class="badge badge-muted">${d.agent_version || '-'}</span></td>
+      <td style="font-size:11px;color:var(--muted);">${mods}</td>
+      <td><span title="${fmtTS(d.last_seen)}">${fmtAge(d.last_seen)}</span></td>
+      <td><span class="badge ${online?'badge-green':'badge-red'}">${online?'Online':'Offline'}</span></td>
+    </tr>`;
+  }).join('');
+}
 
-      subtitle.textContent = data.machines.length
-        ? `${data.machines.length} machine(s) reporting`
-        : "No reports received yet.";
+['inv-search','inv-status-filter'].forEach(id =>
+  document.getElementById(id).addEventListener('input', renderInventory));
 
-      grid.innerHTML = data.machines.map(m => {
-        const moduleRows = Object.entries(MODULE_LABELS).map(([key, label]) => {
-          const mod = m.modules[key];
-          const dot = statusDot(mod);
-          const ts = mod ? formatTimestamp(mod.received_at) : "";
-          return `<div class="module-row"><span>${dot}&nbsp;&nbsp;${label}</span><span class="timestamp">${ts}</span></div>`;
-        }).join("");
+// ---------------------------------------------------------------- DEVICE DETAIL
+async function openDeviceDetail(site, hostname) {
+  document.getElementById('modal-hostname').textContent = hostname;
+  document.getElementById('device-modal').style.display = 'flex';
+  ['properties','alerts','apps','timeline'].forEach(s => {
+    const el = document.getElementById('sub-'+s);
+    el.innerHTML = '<div style="color:var(--muted);padding:20px 0;">Loading...</div>';
+  });
+  document.querySelectorAll('.sub-tab').forEach((t,i) => { t.classList.toggle('active',i===0); });
+  document.querySelectorAll('.sub-panel').forEach((p,i) => { p.classList.toggle('active',i===0); });
 
-        return `
-        <div class="card">
-          <div class="card-header">
-            <span class="hostname">${m.hostname}</span>
-            <span class="site">${m.site_name}</span>
-          </div>
-          <div class="modules">${moduleRows}</div>
-          <div class="cmd-row">
-            <button class="cmd-btn" onclick="sendCommand('${m.site_name}','${m.hostname}','force_audit', this)">Force Audit</button>
-            <button class="cmd-btn" onclick="sendCommand('${m.site_name}','${m.hostname}','enable_enforcement', this)">Enable Enforcement</button>
-            <button class="cmd-btn" onclick="sendCommand('${m.site_name}','${m.hostname}','disable_enforcement', this)">Disable Enforcement</button>
-          </div>
-          <div class="cmd-row">
-            <button class="cmd-btn danger" onclick="sendCommand('${m.site_name}','${m.hostname}','isolate_host', this)">Isolate Host</button>
-            <button class="cmd-btn" onclick="sendCommand('${m.site_name}','${m.hostname}','restore_network', this)">Restore Network</button>
-          </div>
-          <div class="cmd-status"></div>
-        </div>
-      `;
-      }).join("");
-    }
+  const res = await api(`/api/device/${encodeURIComponent(site)}/${encodeURIComponent(hostname)}`);
+  if (!res.ok) { document.getElementById('sub-properties').innerHTML = '<div class="empty">Failed to load device data</div>'; return; }
+  const detail = await res.json();
+  currentDevice = { site, hostname, detail };
+  renderDeviceProperties(detail);
+  renderDeviceAlerts(detail);
+  renderDeviceApps(detail);
+  renderDeviceTimeline(detail);
+}
 
-    async function loadInventory() {
-      const res = await fetch("/api/inventory");
-      const data = await res.json();
-      const body = document.getElementById("inventory-body");
-      if (!data.devices || data.devices.length === 0) {
-        body.innerHTML = '<tr><td colspan="6" class="subtitle">No devices registered yet.</td></tr>';
-        return;
-      }
-      const now = Date.now();
-      body.innerHTML = data.devices.map(d => {
-        const lastSeen = parseTimestamp(d.last_seen);
-        const online = lastSeen && (now - lastSeen.getTime()) < 60 * 60 * 1000;
-        return `<tr>
-          <td>${d.hostname}</td><td>${d.site_name}</td><td>${d.os || "-"}</td>
-          <td>${d.agent_version || "-"}</td>
-          <td>${lastSeen ? lastSeen.toLocaleString() : "Unknown"}</td>
-          <td><span class="badge ${online ? "online" : "offline"}">${online ? "Online" : "Offline"}</span></td>
-        </tr>`;
-      }).join("");
-    }
-
-    async function loadAlerts() {
-      const res = await fetch("/api/status");
-      const data = await res.json();
-      const list = document.getElementById("alerts-list");
-      let alerts = [];
-      (data.machines || []).forEach(m => { alerts = alerts.concat(m.alerts || []); });
-      alerts.sort((a, b) => (parseTimestamp(b.time) || 0) - (parseTimestamp(a.time) || 0));
-      alerts = alerts.slice(0, 50);
-      if (alerts.length === 0) {
-        list.innerHTML = '<div class="subtitle">No threat detections reported.</div>';
-        return;
-      }
-      list.innerHTML = alerts.map(a => {
-        const t = parseTimestamp(a.time);
-        return `<div class="alert-row">
-          <strong>${a.threat_name || "Unknown threat"}</strong> on <strong>${a.hostname}</strong> (${a.site_name})
-          <div class="timestamp">Severity: ${a.severity || "?"} · Action: ${a.action || "?"} · ${t ? t.toLocaleString() : ""}</div>
+function renderDeviceProperties(detail) {
+  const d = detail.device || {};
+  const mods = detail.modules || {};
+  document.getElementById('sub-properties').innerHTML = `
+    <div class="prop-grid" style="margin-bottom:16px;">
+      <div class="prop"><div class="prop-label">Hostname</div><div class="prop-value">${d.hostname||'-'}</div></div>
+      <div class="prop"><div class="prop-label">Site</div><div class="prop-value">${d.site_name||'-'}</div></div>
+      <div class="prop"><div class="prop-label">Operating System</div><div class="prop-value" style="font-size:12px;">${d.os||'-'}</div></div>
+      <div class="prop"><div class="prop-label">Agent Version</div><div class="prop-value">${d.agent_version||'-'}</div></div>
+      <div class="prop"><div class="prop-label">First Seen</div><div class="prop-value" style="font-size:12px;">${fmtTS(d.first_seen)||'-'}</div></div>
+      <div class="prop"><div class="prop-label">Last Seen</div><div class="prop-value" style="font-size:12px;">${fmtTS(d.last_seen)||'-'}</div></div>
+    </div>
+    <h4 style="margin-bottom:10px;font-size:13px;color:var(--muted);">MODULE STATUS</h4>
+    <div class="modules">
+      ${Object.entries(MOD_LABELS).map(([k,label]) => {
+        const mod = mods[k]; const ts = mod?.sent_at || mod?.timestamp;
+        return `<div class="mod-row">
+          <span class="mod-left">${statusDot(mod ? {compliant: mod.summary?.non_compliant === 0} : null)}&nbsp;${label}</span>
+          <span class="ts">${fmtTS(ts)}</span>
         </div>`;
-      }).join("");
-    }
+      }).join('')}
+    </div>`;
+}
 
-    async function loadTimeline() {
-      const host = document.getElementById('target-host').value;
-      const pid = document.getElementById('target-pid').value;
-      const container = document.getElementById('timeline-display');
+function renderDeviceAlerts(detail) {
+  const alerts = detail.alerts || [];
+  if (!alerts.length) {
+    document.getElementById('sub-alerts').innerHTML = '<div class="empty">No alerts for this device</div>'; return;
+  }
+  document.getElementById('sub-alerts').innerHTML = alerts.map(a => `
+    <div class="alert-card severity-${(a.severity||'').toLowerCase()}" onclick="openAlertDetail(${JSON.stringify(JSON.stringify(a))})">
+      <div class="alert-title">${a.threat_name || 'Unknown threat'}</div>
+      <div class="alert-meta">
+        ${statusBadge(a.status||'New')}
+        ${severityBadge(a.severity)}
+        <span>${fmtTS(a.created_at)}</span>
+        <span>Action: ${a.action||'?'}</span>
+      </div>
+    </div>`).join('');
+}
 
-      if (!host) return alert("Please enter a hostname.");
-      container.innerHTML = "<p>Loading event telemetry...</p>";
+function renderDeviceApps(detail) {
+  const apps = detail.apps || [];
+  if (!apps.length) {
+    document.getElementById('sub-apps').innerHTML = '<div class="empty">No application data collected yet.<br><span style="font-size:12px;margin-top:8px;display:block;">Application inventory is collected during the daily Defender audit.</span></div>'; return;
+  }
+  document.getElementById('sub-apps').innerHTML = `<div class="scroll-table"><table>
+    <thead><tr><th>Name</th><th>Version</th><th>Vendor</th><th>Risk</th></tr></thead>
+    <tbody>${apps.map(a => `<tr>
+      <td>${a.name||'-'}</td><td>${a.version||'-'}</td><td>${a.vendor||'-'}</td>
+      <td>${a.cve_count ? `<span class="badge badge-red">${a.cve_count} CVE</span>` : '<span class="badge badge-muted">-</span>'}</td>
+    </tr>`).join('')}</tbody>
+  </table></div>`;
+}
 
-      let url = `/api/timeline/${host}`;
-      if (pid) url += `?target_pid=${pid}`;
+function renderDeviceTimeline(detail) {
+  const events = detail.timeline || [];
+  if (!events.length) {
+    document.getElementById('sub-timeline').innerHTML = '<div class="empty">No timeline events yet.<br><span style="font-size:12px;margin-top:8px;display:block;">Events are collected by USB Lockdown and Process Monitor modules.</span></div>'; return;
+  }
+  document.getElementById('sub-timeline').innerHTML = events.slice().reverse().map(e => {
+    const src = e.source || 'unknown';
+    const desc = e.threat_name || e.path || e.drive || '';
+    const detail_txt = [e.pid && 'PID '+e.pid, e.verdict && 'verdict:'+e.verdict, e.action && 'action:'+e.action].filter(Boolean).join(' | ');
+    return `<div class="timeline-item">
+      <div class="timeline-dot ${src}"></div>
+      <div class="timeline-content">
+        <div class="timeline-time">${fmtTS(e.time)} &nbsp;·&nbsp; ${src}</div>
+        <div class="timeline-event">${desc || '(event)'}</div>
+        ${detail_txt ? `<div class="timeline-detail">${detail_txt}</div>` : ''}
+      </div>
+    </div>`;
+  }).join('');
+}
 
-      try {
-        const res = await fetch(url);
-        const data = await res.json();
-        if (!data.timeline || data.timeline.length === 0) {
-          container.innerHTML = "<p>No events found.</p>";
-          return;
-        }
+// Sub-tab switching (device modal)
+document.querySelectorAll('.sub-tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    const parent = tab.closest('.modal-body');
+    parent.querySelectorAll('.sub-tab').forEach(t => t.classList.remove('active'));
+    parent.querySelectorAll('.sub-panel').forEach(p => p.classList.remove('active'));
+    tab.classList.add('active');
+    parent.querySelector('#sub-' + tab.dataset.sub).classList.add('active');
+  });
+});
 
-        container.innerHTML = data.timeline.map(e => `
-          <div class="timeline-card ${e.event_type.includes("Alert") ? 'alert-card' : ''}">
-            <div class="timeline-time">${e.timestamp}</div>
-            <strong>${e.event_type}</strong> - ${e.process_name} (PID: ${e.pid})
-            ${e.command_line ? `<div class="timeline-cmd">${e.command_line}</div>` : ''}
-          </div>
-        `).join("");
-      } catch (err) {
-        container.innerHTML = `<p style="color:red">Failed: ${err.message}</p>`;
-      }
-    }
+function closeDeviceModal() { document.getElementById('device-modal').style.display='none'; currentDevice=null; }
+function closeModal(e) { if (e.target.classList.contains('modal-overlay')) { e.target.style.display='none'; currentDevice=null; } }
 
-    function loadAll() {
-      loadStatus();
-      loadInventory();
-      loadAlerts();
-    }
+// ---------------------------------------------------------------- ALERTS
+async function loadAlerts() {
+  const res = await api('/api/alerts');
+  if (!res.ok) return;
+  const data = await res.json();
+  allAlerts = data.alerts || [];
+  // Populate site filter
+  const sites = [...new Set(allAlerts.map(a => a.site_name).filter(Boolean))];
+  const sf = document.getElementById('alert-site-filter');
+  const cur = sf.value;
+  sf.innerHTML = '<option value="">All sites</option>' + sites.map(s => `<option${s===cur?' selected':''}>${s}</option>`).join('');
+  renderAlerts();
+}
 
-    loadAll();
-    setInterval(loadAll, 15000); // refresh every 15s
-  </script>
+function renderAlerts() {
+  const search   = document.getElementById('alert-search').value.toLowerCase();
+  const statusF  = document.getElementById('alert-status-filter').value;
+  const sevF     = document.getElementById('alert-severity-filter').value;
+  const siteF    = document.getElementById('alert-site-filter').value;
+  const groupBy  = document.getElementById('alert-group-by').value;
+
+  let filtered = allAlerts.filter(a => {
+    if (statusF && a.status !== statusF) return false;
+    if (sevF && (a.severity||'').toUpperCase() !== sevF) return false;
+    if (siteF && a.site_name !== siteF) return false;
+    if (search && !(a.threat_name||'').toLowerCase().includes(search) && !(a.hostname||'').toLowerCase().includes(search)) return false;
+    return true;
+  });
+
+  const el = document.getElementById('alerts-list');
+  if (!filtered.length) { el.innerHTML = '<div class="empty">No alerts match the current filters</div>'; return; }
+
+  if (groupBy === 'none') {
+    el.innerHTML = filtered.map(a => alertCard(a)).join('');
+    return;
+  }
+  const groups = {};
+  filtered.forEach(a => {
+    const key = groupBy === 'device' ? `${a.site_name}/${a.hostname}` : (a.threat_name||'Unknown');
+    if (!groups[key]) groups[key] = [];
+    groups[key].push(a);
+  });
+  el.innerHTML = Object.entries(groups).map(([key, items]) => `
+    <div style="margin-bottom:20px;">
+      <h3 style="font-size:13px;color:var(--muted);margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid var(--border);">
+        ${groupBy === 'device' ? '&#x1F4BB; ' : '&#x26A0; '}${key}
+        <span style="background:var(--surface2);color:var(--muted);font-size:11px;padding:2px 7px;border-radius:10px;margin-left:6px;">${items.length}</span>
+      </h3>
+      ${items.map(alertCard).join('')}
+    </div>`).join('');
+}
+
+function alertCard(a) {
+  const sev = (a.severity||'').toLowerCase();
+  return `<div class="alert-card severity-${sev}" onclick='openAlertDetail(${JSON.stringify(JSON.stringify(a))})'>
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;">
+      <div class="alert-title">${a.threat_name||'Unknown threat'}</div>
+      <div style="display:flex;gap:6px;align-items:center;">${statusBadge(a.status||'New')}${severityBadge(a.severity)}</div>
+    </div>
+    <div class="alert-meta">
+      <span>&#x1F4BB; ${a.hostname||'?'}</span>
+      <span>&#x1F3F7; ${a.site_name||'?'}</span>
+      <span>${fmtTS(a.created_at)}</span>
+      ${a.action ? `<span>Action: ${a.action}</span>` : ''}
+    </div>
+  </div>`;
+}
+
+['alert-search','alert-status-filter','alert-severity-filter','alert-site-filter','alert-group-by'].forEach(id =>
+  document.getElementById(id).addEventListener('change', renderAlerts));
+document.getElementById('alert-search').addEventListener('input', renderAlerts);
+
+function openAlertDetail(jsonStr) {
+  const a = JSON.parse(jsonStr);
+  document.getElementById('alert-modal-title').textContent = a.threat_name || 'Alert Detail';
+  document.getElementById('alert-modal-body').innerHTML = `
+    <div class="prop-grid" style="margin-bottom:16px;">
+      <div class="prop"><div class="prop-label">Status</div>
+        <div class="prop-value">${statusBadge(a.status||'New')}</div></div>
+      <div class="prop"><div class="prop-label">Severity</div>
+        <div class="prop-value">${severityBadge(a.severity)}</div></div>
+      <div class="prop"><div class="prop-label">Device</div>
+        <div class="prop-value" style="font-size:13px;">${a.hostname||'-'}</div></div>
+      <div class="prop"><div class="prop-label">Site</div>
+        <div class="prop-value" style="font-size:13px;">${a.site_name||'-'}</div></div>
+      <div class="prop"><div class="prop-label">Detected</div>
+        <div class="prop-value" style="font-size:12px;">${fmtTS(a.created_at)||'-'}</div></div>
+      <div class="prop"><div class="prop-label">Action Taken</div>
+        <div class="prop-value" style="font-size:13px;">${a.action||'-'}</div></div>
+    </div>
+    ${a.notes ? `<div class="prop" style="margin-bottom:12px;"><div class="prop-label">Notes</div><div style="font-size:13px;">${a.notes}</div></div>` : ''}
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;">
+      <button class="btn btn-primary" onclick="updateAlertStatus('${a.id}','Open')">Mark Open</button>
+      <button class="btn btn-success" onclick="updateAlertStatus('${a.id}','Closed')">Mark Closed</button>
+      <button class="btn btn-ghost" onclick="updateAlertStatus('${a.id}','New')">Mark New</button>
+    </div>`;
+  document.getElementById('alert-modal').style.display = 'flex';
+}
+
+async function updateAlertStatus(id, status) {
+  if (!getAdminKey()) return;
+  const res = await api(`/api/alerts/${id}`, { method: 'PATCH', body: JSON.stringify({ status }) });
+  if (res.ok) {
+    document.getElementById('alert-modal').style.display = 'none';
+    await loadAlerts();
+  } else {
+    const d = await res.json().catch(()=>({detail:'Error'}));
+    alert('Failed: ' + d.detail);
+  }
+}
+
+// ---------------------------------------------------------------- ENFORCEMENT
+function makeToggle(id, label, desc, checked) {
+  return `<div class="form-row">
+    <div><div class="form-label">${label}</div><div class="form-desc">${desc}</div></div>
+    <label class="toggle"><input type="checkbox" id="${id}" ${checked?'checked':''}><span class="toggle-slider"></span></label>
+  </div>`;
+}
+
+const POLICY_FIELDS = [
+  { id:'enforce',         label:'Enable Enforcement', desc:'Active blocking (vs audit-only)' },
+  { id:'block_usb',       label:'USB Execution Blocking', desc:'Block executables launched from removable drives' },
+  { id:'block_processes', label:'Process Hash Blocking', desc:'Kill processes matching the threat blocklist' },
+  { id:'dns_enforce',     label:'Force Protective DNS', desc:'Override DNS to Cloudflare for Families' },
+  { id:'auto_contain',    label:'Auto-Containment on CRITICAL', desc:'Isolate host when a CRITICAL threat is detected' },
+];
+
+let exemptions = { global: [], site: {}, machine: {} };
+
+function renderPolicyForm(containerId, policyData, exemptionList) {
+  const el = document.getElementById(containerId);
+  el.innerHTML = `
+    <h3>Policy Settings</h3>
+    ${POLICY_FIELDS.map(f => makeToggle(containerId+'_'+f.id, f.label, f.desc, !!(policyData||{})[f.id])).join('')}
+    <div style="margin-top:16px;"><h4 style="font-size:13px;color:var(--muted);margin-bottom:8px;">Exemptions (by hostname or application name)</h4>
+    <div class="exemption-list" id="${containerId}_exemptions">
+      ${(exemptionList||[]).map((e,i) => `<div class="exemption-item">${e}<button class="exemption-remove" onclick="removeExemption('${containerId}',${i})">&#x2212;</button></div>`).join('')}
+    </div>
+    <div class="add-exemption">
+      <input id="${containerId}_new_exemption" placeholder="e.g. DESKTOP-XYZ123 or notepad.exe">
+      <button class="btn btn-ghost" onclick="addExemption('${containerId}')">Add</button>
+    </div></div>`;
+}
+
+function readPolicyForm(containerId) {
+  const policy = {};
+  POLICY_FIELDS.forEach(f => {
+    const el = document.getElementById(containerId+'_'+f.id);
+    if (el) policy[f.id] = el.checked;
+  });
+  return policy;
+}
+
+function addExemption(containerId) {
+  const input = document.getElementById(containerId+'_new_exemption');
+  const val = input.value.trim();
+  if (!val) return;
+  const list = document.getElementById(containerId+'_exemptions');
+  const idx = list.children.length;
+  list.insertAdjacentHTML('beforeend', `<div class="exemption-item">${val}<button class="exemption-remove" onclick="this.parentElement.remove()">&#x2212;</button></div>`);
+  input.value = '';
+}
+
+function removeExemption(containerId, idx) {
+  const list = document.getElementById(containerId+'_exemptions');
+  list.children[idx]?.remove();
+}
+
+function getExemptionsFromForm(containerId) {
+  const list = document.getElementById(containerId+'_exemptions');
+  return [...list.children].map(el => el.textContent.trim().replace('−','').trim());
+}
+
+async function loadEnforcement() {
+  const res = await api('/api/enforcement');
+  if (!res.ok) { renderPolicyForm('global-form', {}, []); return; }
+  const data = await res.json();
+  const gp = data.global || {};
+  renderPolicyForm('global-form', gp, gp.exemptions || []);
+
+  const sites = [...new Set(allMachines.map(m => m.site_name))];
+  ['site-select','machine-site-select'].forEach(id => {
+    const el = document.getElementById(id);
+    if (!el.children.length) el.innerHTML = sites.map(s=>`<option>${s}</option>`).join('');
+  });
+  const curSite = document.getElementById('site-select').value || sites[0];
+  renderPolicyForm('site-form', data.sites?.[curSite] || {}, (data.sites?.[curSite]?.exemptions) || []);
+  updateMachineList(data.machines || {});
+}
+
+function updateMachineList(machineData) {
+  const site = document.getElementById('machine-site-select').value;
+  const machines = allMachines.filter(m => m.site_name === site).map(m => m.hostname);
+  const sel = document.getElementById('machine-select');
+  sel.innerHTML = machines.map(h => `<option>${h}</option>`).join('');
+  const hostname = sel.value;
+  const key = `${site}/${hostname}`;
+  const policy = machineData ? (machineData[key] || {}) : {};
+  renderPolicyForm('machine-form', policy, policy.exemptions || []);
+}
+document.getElementById('machine-site-select').addEventListener('change', () => updateMachineList());
+document.getElementById('machine-select').addEventListener('change', () => updateMachineList());
+
+async function saveEnforcement(scope) {
+  if (!getAdminKey()) return;
+  let url, formId;
+  if (scope === 'global') { url = '/api/enforcement/global'; formId = 'global-form'; }
+  else if (scope === 'site') {
+    const site = document.getElementById('site-select').value;
+    url = `/api/enforcement/site/${encodeURIComponent(site)}`; formId = 'site-form';
+  } else {
+    const site = document.getElementById('machine-site-select').value;
+    const host = document.getElementById('machine-select').value;
+    url = `/api/enforcement/machine/${encodeURIComponent(site)}/${encodeURIComponent(host)}`; formId = 'machine-form';
+  }
+  const policy = readPolicyForm(formId);
+  policy.exemptions = getExemptionsFromForm(formId);
+  const res = await api(url, { method: 'POST', body: JSON.stringify(policy) });
+  if (res.ok) alert('Policy saved and queued on affected machines.');
+  else { const d = await res.json().catch(()=>({detail:'Error'})); alert('Failed: ' + (d.detail||'')); }
+}
+
+// Scope tab switching
+document.querySelectorAll('.scope-tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.scope-tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.enforce-scope').forEach(s => s.style.display='none');
+    tab.classList.add('active');
+    document.getElementById('enforce-' + tab.dataset.scope).style.display = 'block';
+  });
+});
+
+// ---------------------------------------------------------------- Init & refresh
+async function loadAll() {
+  await loadStatus();
+  await loadInventory();
+  await loadAlerts();
+  await loadEnforcement();
+  document.getElementById('conn-dot').style.background = 'var(--green)';
+}
+
+loadAll();
+setInterval(loadAll, 30000);
+</script>
 </body>
 </html>
