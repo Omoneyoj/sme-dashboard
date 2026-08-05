@@ -484,9 +484,196 @@ async def issue_command(request: Request, x_admin_key: Optional[str] = Header(No
         raise HTTPException(503, "Commander credentials not configured on this server — "
                                   "set ORACLE_COMMANDER_ACCESS_KEY, ORACLE_COMMANDER_SECRET_KEY, "
                                   "and DASHBOARD_ADMIN_KEY as environment variables on Render.")
-    key = f"commands/{site_name}/{hostname}/pending.json"
-    s3_put(client, key, {"command": command, "issued_at": datetime.datetime.utcnow().isoformat()})
+    # Clear any stale previous result before queuing so the admin always
+    # sees the result of THIS command, not a leftover from a prior one.
+    try:
+        client.delete_object(Bucket=ORACLE_BUCKET,
+                              Key=f"commands/{site_name}/{hostname}/last_result.json")
+    except Exception:
+        pass
+    payload = {**body, "issued_at": datetime.datetime.utcnow().isoformat()}
+    s3_put(client, f"commands/{site_name}/{hostname}/pending.json", payload)
     return JSONResponse({"status": "queued", "hostname": hostname, "command": command})
+
+
+@app.get("/api/command_result/{site_name}/{hostname}")
+async def get_command_result(site_name: str, hostname: str):
+    """Poll this after issuing a command to get the execution result from
+    the endpoint (written by command_executor.py within ~5 minutes)."""
+    client = s3()
+    if not client:
+        raise HTTPException(503, "Oracle not configured")
+    result = s3_get(client, f"commands/{site_name}/{hostname}/last_result.json")
+    if result is None:
+        return JSONResponse({"status": "pending", "message": "No result yet — command may still be executing."})
+    return JSONResponse(result)
+
+
+# ---------------------------------------------------------------------------
+# Detection Rules Management
+# ---------------------------------------------------------------------------
+
+RULES_PREFIX   = "rules/"
+ALLOWED_ACTIONS = [
+    "alert_only", "kill_process", "isolate_host",
+    "block_network", "collect_forensics",
+]
+
+
+def _rules_key(scope: str, site: str = None, hostname: str = None) -> str:
+    if scope == "global":
+        return f"{RULES_PREFIX}global/rules.json"
+    if scope == "site":
+        return f"{RULES_PREFIX}sites/{site}/rules.json"
+    return f"{RULES_PREFIX}machines/{site}/{hostname}/rules.json"
+
+
+def _load_rules(client, scope: str, site: str = None, hostname: str = None) -> list:
+    data = s3_get(client, _rules_key(scope, site, hostname))
+    return data.get("rules", []) if data else []
+
+
+def _save_rules(client, rules: list, scope: str, site: str = None, hostname: str = None):
+    s3_put(client, _rules_key(scope, site, hostname), {
+        "rules":      rules,
+        "updated_at": datetime.datetime.utcnow().isoformat(),
+    })
+
+
+def _merge_rules_for_machine(client, site: str, hostname: str) -> list:
+    """Global + site + machine rules merged. Machine overrides site overrides global."""
+    global_rules = {r["id"]: r for r in _load_rules(client, "global")}
+    site_rules   = {r["id"]: r for r in _load_rules(client, "site",    site)}
+    mach_rules   = {r["id"]: r for r in _load_rules(client, "machine", site, hostname)}
+    merged = {**global_rules, **site_rules, **mach_rules}
+    return list(merged.values())
+
+
+def _push_rules_to_machine(client, site: str, hostname: str):
+    """Write merged rules as a pending update_rules command for the endpoint."""
+    merged = _merge_rules_for_machine(client, site, hostname)
+    key = f"commands/{site}/{hostname}/pending.json"
+    s3_put(client, key, {
+        "command":    "update_rules",
+        "rules":      merged,
+        "issued_at":  datetime.datetime.utcnow().isoformat(),
+    })
+
+
+@app.get("/api/rules")
+async def get_rules(scope: str = "global", site: Optional[str] = None,
+                     hostname: Optional[str] = None):
+    client = s3()
+    if not client:
+        raise HTTPException(503, "Oracle not configured")
+    rules = _load_rules(client, scope, site, hostname)
+    return JSONResponse({"rules": rules, "scope": scope})
+
+
+@app.post("/api/rules")
+async def create_rule(request: Request, x_admin_key: Optional[str] = Header(None),
+                       scope: str = "global", site: Optional[str] = None,
+                       hostname: Optional[str] = None):
+    require_admin(x_admin_key)
+    body = await request.json()
+    # Validate actions
+    actions = body.get("actions", [])
+    bad = [a for a in actions if a not in ALLOWED_ACTIONS]
+    if bad:
+        raise HTTPException(400, f"Unknown actions: {bad}. Allowed: {ALLOWED_ACTIONS}")
+
+    client = s3(commander=True)
+    if not client:
+        raise HTTPException(503, "Commander not configured")
+
+    rules = _load_rules(client, scope, site, hostname)
+    new_rule = {
+        "id":           str(uuid.uuid4())[:8],
+        "name":         body.get("name", "Unnamed Rule"),
+        "description":  body.get("description", ""),
+        "severity":     body.get("severity", "MEDIUM"),
+        "mitre_tactic": body.get("mitre_tactic", ""),
+        "enabled":      body.get("enabled", True),
+        "conditions":   body.get("conditions", {}),
+        "actions":      actions,
+        "created_at":   datetime.datetime.utcnow().isoformat(),
+        "updated_at":   datetime.datetime.utcnow().isoformat(),
+    }
+    rules.append(new_rule)
+    _save_rules(client, rules, scope, site, hostname)
+    _push_rules_to_affected_machines(client, scope, site, hostname)
+    return JSONResponse(new_rule, status_code=201)
+
+
+@app.put("/api/rules/{rule_id}")
+async def update_rule(rule_id: str, request: Request,
+                       x_admin_key: Optional[str] = Header(None),
+                       scope: str = "global", site: Optional[str] = None,
+                       hostname: Optional[str] = None):
+    require_admin(x_admin_key)
+    body = await request.json()
+    actions = body.get("actions")
+    if actions:
+        bad = [a for a in actions if a not in ALLOWED_ACTIONS]
+        if bad:
+            raise HTTPException(400, f"Unknown actions: {bad}. Allowed: {ALLOWED_ACTIONS}")
+
+    client = s3(commander=True)
+    if not client:
+        raise HTTPException(503, "Commander not configured")
+
+    rules = _load_rules(client, scope, site, hostname)
+    updated = None
+    for r in rules:
+        if r["id"] == rule_id:
+            updatable = {"name","description","severity","mitre_tactic",
+                         "enabled","conditions","actions"}
+            for k in updatable:
+                if k in body:
+                    r[k] = body[k]
+            r["updated_at"] = datetime.datetime.utcnow().isoformat()
+            updated = r
+            break
+    if not updated:
+        raise HTTPException(404, f"Rule {rule_id} not found in scope '{scope}'")
+
+    _save_rules(client, rules, scope, site, hostname)
+    _push_rules_to_affected_machines(client, scope, site, hostname)
+    return JSONResponse(updated)
+
+
+@app.delete("/api/rules/{rule_id}")
+async def delete_rule(rule_id: str,
+                       x_admin_key: Optional[str] = Header(None),
+                       scope: str = "global", site: Optional[str] = None,
+                       hostname: Optional[str] = None):
+    require_admin(x_admin_key)
+    client = s3(commander=True)
+    if not client:
+        raise HTTPException(503, "Commander not configured")
+
+    rules = _load_rules(client, scope, site, hostname)
+    before = len(rules)
+    rules = [r for r in rules if r["id"] != rule_id]
+    if len(rules) == before:
+        raise HTTPException(404, f"Rule {rule_id} not found")
+
+    _save_rules(client, rules, scope, site, hostname)
+    _push_rules_to_affected_machines(client, scope, site, hostname)
+    return JSONResponse({"status": "deleted", "rule_id": rule_id})
+
+
+def _push_rules_to_affected_machines(client, scope: str,
+                                      site: Optional[str], hostname: Optional[str]):
+    """After any rule change, push merged ruleset to all affected endpoints."""
+    devices = fetch_inventory()
+    for d in devices:
+        if scope == "global":
+            _push_rules_to_machine(client, d["site_name"], d["hostname"])
+        elif scope == "site" and d["site_name"] == site:
+            _push_rules_to_machine(client, d["site_name"], d["hostname"])
+        elif scope == "machine" and d["site_name"] == site and d["hostname"] == hostname:
+            _push_rules_to_machine(client, d["site_name"], d["hostname"])
 
 
 @app.post("/api/alerts/webhook")

@@ -138,6 +138,7 @@ tr.clickable{cursor:pointer;}
     <button class="nav-btn" data-panel="inventory">Inventory</button>
     <button class="nav-btn" data-panel="alerts">Alerts</button>
     <button class="nav-btn" data-panel="enforcement">Enforcement</button>
+    <button class="nav-btn" data-panel="rules">Detection Rules</button>
   </nav>
   <div class="topbar-right">
     <span class="status-dot" id="conn-dot"></span>
@@ -227,6 +228,27 @@ tr.clickable{cursor:pointer;}
     </div>
   </div>
 </div>
+
+  <!-- RULES -->
+  <div class="panel" id="panel-rules">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+      <div>
+        <h2 style="font-size:16px;margin-bottom:4px;">Detection Rules</h2>
+        <p style="font-size:12px;color:var(--muted);">Rules push to all affected endpoints within 5 min. Machine-level overrides site, site overrides global.</p>
+      </div>
+      <button class="btn btn-primary" onclick="openRuleEditor(null)">+ New Rule</button>
+    </div>
+    <div style="display:flex;gap:10px;align-items:center;margin-bottom:16px;flex-wrap:wrap;">
+      <div class="scope-tabs" style="margin:0;">
+        <button class="scope-tab active" data-rule-scope="global">Global</button>
+        <button class="scope-tab" data-rule-scope="site">By Site</button>
+        <button class="scope-tab" data-rule-scope="machine">By Machine</button>
+      </div>
+      <select id="rule-site-sel" style="display:none;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:6px;font-size:12px;" onchange="loadRules()"></select>
+      <select id="rule-machine-sel" style="display:none;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:6px;font-size:12px;" onchange="loadRules()"></select>
+    </div>
+    <div id="rules-list"></div>
+  </div>
 
 <!-- Device Detail Modal -->
 <div class="modal-overlay" id="device-modal" style="display:none;" onclick="closeModal(event)">
@@ -786,11 +808,293 @@ async function loadAll() {
   await loadInventory();
   await loadAlerts();
   await loadEnforcement();
+  await loadRules();
   document.getElementById('conn-dot').style.background = 'var(--green)';
 }
 
 loadAll();
 setInterval(loadAll, 30000);
+// ---------------------------------------------------------------- COMMAND RESULT POLLING
+async function pollCommandResult(site, hostname, maxWaitSecs=310) {
+  const started = Date.now();
+  while ((Date.now() - started) < maxWaitSecs * 1000) {
+    await new Promise(r => setTimeout(r, 6000));
+    try {
+      const res = await api(`/api/command_result/${encodeURIComponent(site)}/${encodeURIComponent(hostname)}`);
+      if (!res.ok) continue;
+      const data = await res.json();
+      if (data.status === 'pending') continue;
+      return data;
+    } catch(e) { continue; }
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------- RULES
+const ALLOWED_ACTIONS = [
+  { id:'alert_only',        label:'Alert Only',              icon:'\u{1F514}', color:'var(--blue)' },
+  { id:'kill_process',      label:'Terminate Process',       icon:'\u{274C}',  color:'var(--red)' },
+  { id:'isolate_host',      label:'Isolate Endpoint',        icon:'\u{1F512}', color:'var(--amber)' },
+  { id:'block_network',     label:'Block Network Connection',icon:'\u{1F6AB}', color:'var(--amber)' },
+  { id:'collect_forensics', label:'Collect Forensics Data',  icon:'\u{1F50D}', color:'var(--purple)' },
+];
+const ACTION_MAP = Object.fromEntries(ALLOWED_ACTIONS.map(a => [a.id, a]));
+
+let currentRuleScope = 'global';
+let allRules = [];
+
+// Scope tab switching for rules
+document.querySelectorAll('[data-rule-scope]').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('[data-rule-scope]').forEach(t => t.classList.remove('active'));
+    tab.classList.add('active');
+    currentRuleScope = tab.dataset.ruleScope;
+    const siteSel    = document.getElementById('rule-site-sel');
+    const machineSel = document.getElementById('rule-machine-sel');
+    siteSel.style.display    = currentRuleScope !== 'global' ? 'block' : 'none';
+    machineSel.style.display = currentRuleScope === 'machine' ? 'block' : 'none';
+    loadRules();
+  });
+});
+
+function getRuleScopeParams() {
+  const site    = document.getElementById('rule-site-sel').value || undefined;
+  const machine = document.getElementById('rule-machine-sel').value || undefined;
+  let qs = `scope=${currentRuleScope}`;
+  if (site)    qs += `&site=${encodeURIComponent(site)}`;
+  if (machine && currentRuleScope === 'machine') qs += `&hostname=${encodeURIComponent(machine)}`;
+  return qs;
+}
+
+async function loadRules() {
+  // Populate site selector from known machines
+  const siteSel = document.getElementById('rule-site-sel');
+  if (!siteSel.children.length && allMachines.length) {
+    const sites = [...new Set(allMachines.map(m => m.site_name))];
+    siteSel.innerHTML = sites.map(s => `<option>${s}</option>`).join('');
+  }
+  const machineSel = document.getElementById('rule-machine-sel');
+  if (currentRuleScope === 'machine') {
+    const site = siteSel.value;
+    const machines = allMachines.filter(m => m.site_name === site).map(m => m.hostname);
+    machineSel.innerHTML = machines.map(h => `<option>${h}</option>`).join('');
+  }
+
+  const res = await api(`/api/rules?${getRuleScopeParams()}`);
+  if (!res.ok) return;
+  const data = await res.json();
+  allRules = data.rules || [];
+  renderRules();
+}
+
+function renderRules() {
+  const el = document.getElementById('rules-list');
+  if (!allRules.length) {
+    el.innerHTML = '<div class="empty">No rules in this scope. Click "+ New Rule" to create one.</div>'; return;
+  }
+  el.innerHTML = `<div class="scroll-table"><table>
+    <thead><tr>
+      <th>Name</th><th>Severity</th><th>MITRE Tactic</th>
+      <th>Conditions</th><th>Actions</th><th>Status</th><th></th>
+    </tr></thead>
+    <tbody>${allRules.map(r => ruleRow(r)).join('')}</tbody>
+  </table></div>`;
+}
+
+function ruleRow(r) {
+  const sevClass = r.severity === 'CRITICAL' ? 'badge-red' : r.severity === 'HIGH' ? 'badge-amber' : 'badge-blue';
+  const conds = Object.entries(r.conditions || {}).map(([k,v]) =>
+    `<span style="font-size:10px;color:var(--muted);">${k}: ${Array.isArray(v)?v.join(', '):v}</span>`
+  ).join('<br>') || '<span style="color:var(--muted);font-size:11px;">Any</span>';
+  const actions = (r.actions || []).map(a => {
+    const info = ACTION_MAP[a] || {label:a, icon:'?', color:'var(--muted)'};
+    return `<span title="${info.label}" style="margin-right:4px;font-size:14px;">${info.icon}</span>`;
+  }).join('');
+  const rid = escAttr(r.id);
+  return `<tr>
+    <td><strong>${r.name}</strong>${r.description?`<br><span style="font-size:11px;color:var(--muted);">${r.description}</span>`:''}</td>
+    <td><span class="badge ${sevClass}">${r.severity||'?'}</span></td>
+    <td style="font-size:12px;color:var(--muted);">${r.mitre_tactic||'-'}</td>
+    <td style="font-size:11px;">${conds}</td>
+    <td>${actions}</td>
+    <td><span class="badge ${r.enabled!==false?'badge-green':'badge-muted'}">${r.enabled!==false?'Active':'Disabled'}</span></td>
+    <td style="white-space:nowrap;">
+      <button class="btn btn-ghost" style="margin-right:4px;" onclick='openRuleEditor(${JSON.stringify(JSON.stringify(r))})'>Edit</button>
+      <button class="btn btn-danger" onclick="deleteRule('${rid}')">Delete</button>
+    </td>
+  </tr>`;
+}
+
+// ---------------------------------------------------------------- RULE EDITOR MODAL
+function openRuleEditor(jsonStr) {
+  const rule = jsonStr ? JSON.parse(jsonStr) : null;
+  const isNew = !rule;
+
+  // Build condition fields
+  const conds = rule?.conditions || {};
+  const actionsSet = new Set(rule?.actions || ['alert_only']);
+
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay';
+  modal.id = 'rule-editor-modal';
+  modal.innerHTML = `
+    <div class="modal" style="max-width:700px;" onclick="event.stopPropagation()">
+      <div class="modal-header">
+        <span class="modal-title">${isNew ? 'New Detection Rule' : 'Edit Rule: ' + rule.name}</span>
+        <button class="modal-close" onclick="document.getElementById('rule-editor-modal').remove()">&#x2715;</button>
+      </div>
+      <div class="modal-body">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px;">
+          <div>
+            <div class="prop-label" style="margin-bottom:4px;">Rule Name *</div>
+            <input id="re-name" value="${escAttr(rule?.name||'')}" placeholder="e.g. Office Macro Spawning Shell"
+              style="width:100%;background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:8px 10px;border-radius:6px;font-size:13px;">
+          </div>
+          <div>
+            <div class="prop-label" style="margin-bottom:4px;">Severity</div>
+            <select id="re-severity" style="width:100%;background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:8px 10px;border-radius:6px;font-size:13px;">
+              ${['LOW','MEDIUM','HIGH','CRITICAL'].map(s=>`<option${s===rule?.severity?' selected':''}>${s}</option>`).join('')}
+            </select>
+          </div>
+          <div>
+            <div class="prop-label" style="margin-bottom:4px;">MITRE Tactic</div>
+            <input id="re-mitre" value="${escAttr(rule?.mitre_tactic||'')}" placeholder="e.g. Execution (T1059)"
+              style="width:100%;background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:8px 10px;border-radius:6px;font-size:13px;">
+          </div>
+          <div>
+            <div class="prop-label" style="margin-bottom:4px;">Status</div>
+            <select id="re-enabled" style="width:100%;background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:8px 10px;border-radius:6px;font-size:13px;">
+              <option value="true"${rule?.enabled!==false?' selected':''}>Active</option>
+              <option value="false"${rule?.enabled===false?' selected':''}>Disabled</option>
+            </select>
+          </div>
+        </div>
+        <div style="margin-bottom:4px;font-size:12px;color:var(--muted);">Description</div>
+        <input id="re-desc" value="${escAttr(rule?.description||'')}" placeholder="Optional description"
+          style="width:100%;background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:8px 10px;border-radius:6px;font-size:13px;margin-bottom:16px;">
+
+        <div style="font-size:14px;font-weight:600;margin-bottom:10px;">Conditions <span style="font-size:11px;font-weight:400;color:var(--muted);">(all specified conditions must match)</span></div>
+        <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:16px;">
+          ${condField('re-parent', 'Parent Process', (conds.parent_process||[]).join(', '), 'e.g. winword.exe, excel.exe')}
+          ${condField('re-procname', 'Process Name', (conds.process_name||[]).join(', '), 'e.g. cmd.exe, powershell.exe')}
+          ${condField('re-cmdline', 'Command Line Contains', (conds.command_line_contains||[]).join(', '), 'e.g. -encodedcommand, -enc')}
+        </div>
+
+        <div style="font-size:14px;font-weight:600;margin-bottom:10px;">Actions <span style="font-size:11px;font-weight:400;color:var(--muted);">(executed in order when rule matches)</span></div>
+        <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:20px;">
+          ${ALLOWED_ACTIONS.map(a => `
+            <label style="display:flex;align-items:center;gap:10px;background:var(--surface2);padding:10px;border-radius:8px;cursor:pointer;border:1px solid ${actionsSet.has(a.id)?'var(--accent)':'var(--border)'};">
+              <input type="checkbox" id="re-act-${a.id}" ${actionsSet.has(a.id)?'checked':''} style="width:14px;height:14px;accent-color:var(--blue);">
+              <span style="font-size:16px;">${a.icon}</span>
+              <span><strong style="color:${a.color};font-size:13px;">${a.label}</strong></span>
+            </label>`).join('')}
+        </div>
+
+        <div style="display:flex;gap:8px;justify-content:flex-end;">
+          <button class="btn btn-ghost" onclick="document.getElementById('rule-editor-modal').remove()">Cancel</button>
+          <button class="btn btn-primary" onclick="saveRule('${escAttr(rule?.id||'')}')">
+            ${isNew ? 'Create Rule' : 'Save Changes'}
+          </button>
+        </div>
+      </div>
+    </div>`;
+  modal.onclick = e => { if (e.target === modal) modal.remove(); };
+  document.body.appendChild(modal);
+}
+
+function condField(id, label, value, placeholder) {
+  return `<div>
+    <div class="prop-label" style="margin-bottom:4px;">${label} <span style="font-size:10px;color:var(--muted);">(comma-separated)</span></div>
+    <input id="${id}" value="${escAttr(value)}" placeholder="${placeholder}"
+      style="width:100%;background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:8px 10px;border-radius:6px;font-size:12px;font-family:monospace;">
+  </div>`;
+}
+
+function parseCSV(str) {
+  return str.split(',').map(s=>s.trim().toLowerCase()).filter(Boolean);
+}
+
+async function saveRule(existingId) {
+  if (!getAdminKey()) return;
+  const name = document.getElementById('re-name').value.trim();
+  if (!name) { alert('Rule name is required.'); return; }
+
+  const conditions = {};
+  const parent   = parseCSV(document.getElementById('re-parent').value);
+  const procname = parseCSV(document.getElementById('re-procname').value);
+  const cmdline  = parseCSV(document.getElementById('re-cmdline').value);
+  if (parent.length)   conditions.parent_process        = parent;
+  if (procname.length) conditions.process_name          = procname;
+  if (cmdline.length)  conditions.command_line_contains = cmdline;
+
+  const actions = ALLOWED_ACTIONS
+    .filter(a => document.getElementById('re-act-'+a.id)?.checked)
+    .map(a => a.id);
+  if (!actions.length) actions.push('alert_only');
+
+  const payload = {
+    name,
+    description:  document.getElementById('re-desc').value.trim(),
+    severity:     document.getElementById('re-severity').value,
+    mitre_tactic: document.getElementById('re-mitre').value.trim(),
+    enabled:      document.getElementById('re-enabled').value === 'true',
+    conditions,
+    actions,
+  };
+
+  const qs = getRuleScopeParams();
+  const isNew = !existingId;
+  const url = isNew ? `/api/rules?${qs}` : `/api/rules/${existingId}?${qs}`;
+  const method = isNew ? 'POST' : 'PUT';
+
+  const res = await api(url, { method, body: JSON.stringify(payload) });
+  if (res.ok) {
+    document.getElementById('rule-editor-modal')?.remove();
+    await loadRules();
+    showToast(isNew ? 'Rule created and pushed to endpoints.' : 'Rule updated and pushed to endpoints.', 'green');
+  } else {
+    const d = await res.json().catch(()=>({detail:'Error'}));
+    alert('Failed: ' + (d.detail||'Unknown error'));
+  }
+}
+
+async function deleteRule(ruleId) {
+  if (!confirm('Delete this rule? It will be removed from all affected endpoints.')) return;
+  if (!getAdminKey()) return;
+  const res = await api(`/api/rules/${ruleId}?${getRuleScopeParams()}`, { method: 'DELETE' });
+  if (res.ok) { await loadRules(); showToast('Rule deleted.', 'red'); }
+  else { const d = await res.json().catch(()=>({detail:''})); alert('Failed: '+d.detail); }
+}
+
+// ---------------------------------------------------------------- TOAST
+function showToast(msg, color='green') {
+  const t = document.createElement('div');
+  t.textContent = msg;
+  t.style.cssText = `position:fixed;bottom:24px;right:24px;background:var(--surface);border:1px solid var(--border);
+    border-left:3px solid var(--${color});padding:10px 16px;border-radius:8px;font-size:13px;z-index:999;
+    box-shadow:0 4px 12px rgba(0,0,0,.4);max-width:400px;`;
+  document.body.appendChild(t);
+  setTimeout(()=>t.remove(), 4000);
+}
+
+// ---------------------------------------------------------------- COMMAND STATUS WITH POLLING
+// Wrap the existing cmd() function to also poll for result
+const _origCmd = cmd;
+window.cmd = async function(site, hostname, command, btn) {
+  await _origCmd(site, hostname, command, btn);
+  const statusEl = btn.closest('.card')?.querySelector('.cmd-status');
+  if (!statusEl) return;
+  statusEl.textContent = 'Waiting for machine response (up to 5 min)...';
+  const result = await pollCommandResult(site, hostname);
+  if (!result) {
+    statusEl.textContent = 'No response received within 5 min. Check agent.log on the machine.';
+    return;
+  }
+  const icon = result.success ? '\u2705' : '\u274C';
+  statusEl.textContent = `${icon} ${result.detail?.substring(0,200) || (result.success?'Success':'Failed')}`;
+  statusEl.style.color = result.success ? 'var(--green)' : 'var(--red)';
+};
+
 </script>
 </body>
 </html>
