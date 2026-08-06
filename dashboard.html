@@ -128,13 +128,46 @@ tr.clickable{cursor:pointer;}
 .empty svg{opacity:.3;margin-bottom:12px;}
 /* Scrollable */
 .scroll-table{overflow-x:auto;}
+
+/* Overview */
+.stat-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:16px;margin-bottom:24px;}
+.stat-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:20px;cursor:pointer;transition:all .15s;position:relative;overflow:hidden;}
+.stat-card:hover{border-color:var(--accent);transform:translateY(-1px);}
+.stat-card::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;}
+.stat-card.green::before{background:var(--green);}
+.stat-card.red::before{background:var(--red);}
+.stat-card.amber::before{background:var(--amber);}
+.stat-card.blue::before{background:var(--blue);}
+.stat-card.purple::before{background:var(--purple);}
+.stat-num{font-size:36px;font-weight:700;line-height:1;margin-bottom:4px;}
+.stat-label{font-size:12px;color:var(--muted);margin-bottom:8px;}
+.stat-sub{font-size:11px;color:var(--muted);}
+.stat-trend{font-size:11px;margin-top:6px;}
+.overview-section{margin-bottom:28px;}
+.overview-section h2{font-size:15px;font-weight:600;margin-bottom:4px;}
+.overview-section .section-sub{font-size:12px;color:var(--muted);margin-bottom:14px;}
+.perf-bar{background:var(--surface2);border-radius:8px;height:8px;margin-top:6px;overflow:hidden;}
+.perf-bar-fill{height:100%;border-radius:8px;transition:width .6s ease;}
+.recent-alert-row{display:flex;align-items:center;gap:10px;padding:8px 12px;background:var(--surface2);border-radius:8px;margin-bottom:6px;cursor:pointer;transition:background .15s;}
+.recent-alert-row:hover{background:rgba(255,255,255,.05);}
+.recent-alert-info{flex:1;min-width:0;}
+.recent-alert-name{font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.recent-alert-meta{font-size:11px;color:var(--muted);}
+.intro-banner{background:linear-gradient(135deg,rgba(31,111,235,.15) 0%,rgba(88,166,255,.08) 100%);border:1px solid rgba(31,111,235,.3);border-radius:12px;padding:20px 24px;margin-bottom:24px;display:flex;justify-content:space-between;align-items:center;gap:16px;}
+.intro-text h1{font-size:20px;font-weight:700;margin-bottom:4px;}
+.intro-text p{font-size:13px;color:var(--muted);max-width:500px;}
+.intro-actions{display:flex;gap:8px;flex-shrink:0;}
+.offline-warning{background:rgba(210,153,34,.1);border:1px solid rgba(210,153,34,.3);border-radius:8px;padding:12px 16px;font-size:13px;}
+.offline-device-row{display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid rgba(48,54,61,.4);}
+.offline-device-row:last-child{border-bottom:none;}
 </style>
 </head>
 <body>
 <div class="topbar">
   <h1>SME Security</h1>
   <nav class="nav">
-    <button class="nav-btn active" data-panel="status">Live Status</button>
+    <button class="nav-btn active" data-panel="overview">Overview</button>
+    <button class="nav-btn" data-panel="status">Live Status</button>
     <button class="nav-btn" data-panel="inventory">Inventory</button>
     <button class="nav-btn" data-panel="alerts">Alerts</button>
     <button class="nav-btn" data-panel="enforcement">Enforcement</button>
@@ -147,8 +180,107 @@ tr.clickable{cursor:pointer;}
 </div>
 
 <div class="main">
+
+  <!-- OVERVIEW -->
+  <div class="panel active" id="panel-overview">
+    <div class="intro-banner">
+      <div class="intro-text">
+        <h1 id="overview-org-name">SME Security Operations</h1>
+        <p>Centralized endpoint detection &amp; response — monitor, investigate, and respond to threats across all your managed endpoints from a single console.</p>
+      </div>
+      <div class="intro-actions">
+        <button class="btn btn-primary" onclick="navTo('inventory')">View Inventory</button>
+        <button class="btn btn-ghost" onclick="openSettings()">Settings</button>
+      </div>
+    </div>
+
+    <!-- Device stats -->
+    <div class="overview-section">
+      <h2>Endpoint Status</h2>
+      <div class="section-sub">Click any card to see the full device list.</div>
+      <div class="stat-grid" id="ov-device-stats">
+        <div class="stat-card green" onclick="navToFiltered('inventory','online')">
+          <div class="stat-num" id="ov-online">-</div>
+          <div class="stat-label">Online</div>
+          <div class="stat-sub">Reported in last hour</div>
+        </div>
+        <div class="stat-card red" onclick="navToFiltered('inventory','offline')">
+          <div class="stat-num" id="ov-offline">-</div>
+          <div class="stat-label">Offline</div>
+          <div class="stat-sub">No recent check-in</div>
+        </div>
+        <div class="stat-card amber" onclick="showLongOfflineModal()">
+          <div class="stat-num" id="ov-long-offline">-</div>
+          <div class="stat-label">Offline &gt;<span id="ov-warning-days">7</span> days</div>
+          <div class="stat-sub" id="ov-long-offline-sub">Click for device list</div>
+        </div>
+        <div class="stat-card blue">
+          <div class="stat-num" id="ov-total">-</div>
+          <div class="stat-label">Total Managed</div>
+          <div class="stat-sub" id="ov-sites-count">Across all sites</div>
+        </div>
+      </div>
+      <div id="ov-long-offline-warning" style="display:none;"></div>
+    </div>
+
+    <!-- Alert stats -->
+    <div class="overview-section">
+      <h2>Alert Summary</h2>
+      <div class="section-sub">Click any card to see filtered alerts.</div>
+      <div class="stat-grid">
+        <div class="stat-card red" onclick="navToFilteredAlerts('New')">
+          <div class="stat-num" id="ov-new-alerts">-</div>
+          <div class="stat-label">New Alerts</div>
+          <div class="stat-sub">Unacknowledged</div>
+        </div>
+        <div class="stat-card amber" onclick="navToFilteredAlerts('Open')">
+          <div class="stat-num" id="ov-open-alerts">-</div>
+          <div class="stat-label">Open Alerts</div>
+          <div class="stat-sub">Under investigation</div>
+        </div>
+        <div class="stat-card green" onclick="navToFilteredAlerts('Closed')">
+          <div class="stat-num" id="ov-closed-alerts">-</div>
+          <div class="stat-label">Closed Alerts</div>
+          <div class="stat-sub">Resolved</div>
+        </div>
+        <div class="stat-card purple" onclick="navTo('rules')">
+          <div class="stat-num" id="ov-playbook-alerts">-</div>
+          <div class="stat-label">Rule Detections</div>
+          <div class="stat-sub">From playbook rules</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- SOC Performance -->
+    <div class="overview-section">
+      <h2>SOC Performance</h2>
+      <div class="section-sub">Based on <span id="ov-soc-samples">-</span> alert(s) with status transitions. Click to view all alerts.</div>
+      <div class="stat-grid" style="grid-template-columns:repeat(auto-fill,minmax(240px,1fr));">
+        <div class="stat-card blue" onclick="navTo('alerts')">
+          <div class="stat-label">Mean Time to Detect (MTTD)</div>
+          <div class="stat-num" id="ov-mttd" style="font-size:28px;">-</div>
+          <div class="stat-sub">Avg minutes from detection to acknowledgement</div>
+          <div class="perf-bar"><div class="perf-bar-fill" id="ov-mttd-bar" style="background:var(--blue);width:0%;"></div></div>
+        </div>
+        <div class="stat-card green" onclick="navTo('alerts')">
+          <div class="stat-label">Mean Time to Respond (MTTR)</div>
+          <div class="stat-num" id="ov-mttr" style="font-size:28px;">-</div>
+          <div class="stat-sub">Avg minutes from detection to resolution</div>
+          <div class="perf-bar"><div class="perf-bar-fill" id="ov-mttr-bar" style="background:var(--green);width:0%;"></div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Recent Alerts -->
+    <div class="overview-section">
+      <h2>Recent Unresolved Alerts</h2>
+      <div class="section-sub"><a href="#" onclick="navTo('alerts');return false;" style="color:var(--blue);text-decoration:none;">View all alerts &rarr;</a></div>
+      <div id="ov-recent-alerts"></div>
+    </div>
+  </div>
+
   <!-- STATUS -->
-  <div class="panel active" id="panel-status">
+  <div class="panel" id="panel-status">
     <div class="grid" id="status-grid"></div>
   </div>
 
@@ -809,6 +941,7 @@ async function loadAll() {
   await loadAlerts();
   await loadEnforcement();
   await loadRules();
+  await loadOverview();
   document.getElementById('conn-dot').style.background = 'var(--green)';
 }
 
@@ -1095,6 +1228,223 @@ window.cmd = async function(site, hostname, command, btn) {
   statusEl.style.color = result.success ? 'var(--green)' : 'var(--red)';
 };
 
+// ================================================================ OVERVIEW
+let _overviewData = null;
+
+function navTo(panel) {
+  document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  const btn = document.querySelector(`.nav-btn[data-panel="${panel}"]`);
+  if (btn) btn.classList.add('active');
+  const el = document.getElementById('panel-' + panel);
+  if (el) el.classList.add('active');
+}
+
+function navToFiltered(panel, filter) {
+  navTo(panel);
+  if (panel === 'inventory') {
+    const f = document.getElementById('inv-status-filter');
+    if (f) { f.value = filter; renderInventory(); }
+  }
+}
+
+function navToFilteredAlerts(status) {
+  navTo('alerts');
+  const f = document.getElementById('alert-status-filter');
+  if (f) { f.value = status; renderAlerts(); }
+}
+
+function showLongOfflineModal() {
+  if (!_overviewData) return;
+  const lo = _overviewData.devices.long_offline || [];
+  const days = _overviewData.devices.warning_days;
+  document.getElementById('long-offline-modal-title').textContent =
+    `Devices Offline > ${days} day(s) (${lo.length})`;
+  if (!lo.length) {
+    document.getElementById('long-offline-modal-body').innerHTML =
+      '<div class="empty">No devices have been offline this long.</div>';
+  } else {
+    document.getElementById('long-offline-modal-body').innerHTML = lo.map(d => `
+      <div class="offline-device-row">
+        <div>
+          <strong>${d.hostname}</strong>
+          <span style="font-size:11px;color:var(--muted);margin-left:8px;">${d.site_name}</span>
+        </div>
+        <div style="text-align:right;">
+          <span class="badge badge-red">${d.offline_days} days offline</span>
+          <div style="font-size:11px;color:var(--muted);margin-top:2px;">${fmtTS(d.last_seen)}</div>
+        </div>
+      </div>`).join('');
+  }
+  document.getElementById('long-offline-modal').style.display = 'flex';
+}
+
+function fmtMinutes(mins) {
+  if (mins === null || mins === undefined) return 'N/A';
+  if (mins < 60) return mins.toFixed(0) + ' min';
+  return (mins / 60).toFixed(1) + ' hr';
+}
+
+function perfBarWidth(mins, goodThreshold) {
+  // 100% = good (fast), lower = slower
+  if (!mins || mins <= 0) return 0;
+  const ratio = Math.min(goodThreshold / mins, 1);
+  return Math.round(ratio * 100);
+}
+
+async function loadOverview() {
+  const res = await api('/api/overview');
+  if (!res.ok) return;
+  _overviewData = await res.json();
+
+  // Org name
+  const orgName = _overviewData.org_name || '';
+  if (orgName) document.getElementById('overview-org-name').textContent = orgName + ' — Security Operations';
+
+  // Device stats
+  document.getElementById('ov-online').textContent       = _overviewData.devices.online;
+  document.getElementById('ov-offline').textContent      = _overviewData.devices.offline;
+  document.getElementById('ov-long-offline').textContent = _overviewData.devices.long_offline.length;
+  document.getElementById('ov-total').textContent        = _overviewData.devices.total;
+  document.getElementById('ov-warning-days').textContent = _overviewData.devices.warning_days;
+
+  const sites = new Set();
+  (allDevices || []).forEach(d => sites.add(d.site_name));
+  document.getElementById('ov-sites-count').textContent = `Across ${sites.size || '-'} site(s)`;
+
+  // Long offline warning banner
+  const lo = _overviewData.devices.long_offline;
+  const warningEl = document.getElementById('ov-long-offline-warning');
+  if (lo.length > 0) {
+    warningEl.style.display = 'block';
+    warningEl.innerHTML = `<div class="offline-warning">
+      <strong>&#x26A0; ${lo.length} device(s) have been offline for more than ${_overviewData.devices.warning_days} days.</strong>
+      ${lo.slice(0,3).map(d => `<div class="offline-device-row" style="cursor:pointer;" onclick="openDeviceDetail('${escAttr(d.site_name)}','${escAttr(d.hostname)}')">
+        <span><strong>${d.hostname}</strong> <span style="color:var(--muted);font-size:11px;">${d.site_name}</span></span>
+        <span class="badge badge-red">${d.offline_days}d offline</span>
+      </div>`).join('')}
+      ${lo.length > 3 ? `<div style="font-size:12px;color:var(--muted);margin-top:6px;cursor:pointer;" onclick="showLongOfflineModal()">+ ${lo.length-3} more</div>` : ''}
+    </div>`;
+  } else {
+    warningEl.style.display = 'none';
+  }
+
+  // Alert stats
+  const al = _overviewData.alerts;
+  document.getElementById('ov-new-alerts').textContent      = al.new;
+  document.getElementById('ov-open-alerts').textContent     = al.open;
+  document.getElementById('ov-closed-alerts').textContent   = al.closed;
+  document.getElementById('ov-playbook-alerts').textContent = al.playbook;
+
+  // SOC performance
+  const soc = _overviewData.soc_performance;
+  document.getElementById('ov-soc-samples').textContent = soc.sample_count;
+  document.getElementById('ov-mttd').textContent        = fmtMinutes(soc.mttd_minutes);
+  document.getElementById('ov-mttr').textContent        = fmtMinutes(soc.mttr_minutes);
+  // Good MTTD target: 30 min; Good MTTR: 120 min
+  document.getElementById('ov-mttd-bar').style.width = perfBarWidth(soc.mttd_minutes, 30) + '%';
+  document.getElementById('ov-mttr-bar').style.width = perfBarWidth(soc.mttr_minutes, 120) + '%';
+
+  // Recent alerts feed
+  const feed = _overviewData.recent_alerts || [];
+  const feedEl = document.getElementById('ov-recent-alerts');
+  if (!feed.length) {
+    feedEl.innerHTML = '<div class="empty" style="padding:24px 0;">No unresolved alerts.</div>';
+  } else {
+    feedEl.innerHTML = feed.map(a => {
+      const sev = (a.severity || '').toUpperCase();
+      const dotCls = sev === 'CRITICAL' || sev === 'HIGH' ? 'red' : sev === 'MEDIUM' ? 'amber' : 'muted';
+      return `<div class="recent-alert-row" onclick='openAlertDetail(${JSON.stringify(JSON.stringify(a))})'>
+        <span class="dot ${dotCls}" style="flex-shrink:0;"></span>
+        <div class="recent-alert-info">
+          <div class="recent-alert-name">${a.threat_name || 'Unknown threat'}</div>
+          <div class="recent-alert-meta">${a.hostname || '?'} &middot; ${a.site_name || '?'} &middot; ${fmtAge(a.detected_at || a.time)}</div>
+        </div>
+        <div style="flex-shrink:0;">
+          ${statusBadge(a.status || 'New')}
+          ${severityBadge(a.severity)}
+        </div>
+      </div>`;
+    }).join('');
+  }
+}
+
+// ================================================================ SETTINGS
+let _currentSettings = {};
+
+async function openSettings() {
+  const res = await api('/api/settings');
+  if (res.ok) _currentSettings = await res.json();
+  document.getElementById('set-orgname').value       = _currentSettings.org_name || '';
+  document.getElementById('set-offline-hours').value = _currentSettings.offline_threshold_hours || 1;
+  document.getElementById('set-warning-days').value  = _currentSettings.offline_days_warning || 7;
+  document.getElementById('settings-modal').style.display = 'flex';
+}
+
+async function saveSettings() {
+  if (!getAdminKey()) return;
+  const body = {
+    org_name:                document.getElementById('set-orgname').value.trim(),
+    offline_threshold_hours: parseInt(document.getElementById('set-offline-hours').value) || 1,
+    offline_days_warning:    parseInt(document.getElementById('set-warning-days').value) || 7,
+  };
+  const res = await api('/api/settings', { method: 'PUT', body: JSON.stringify(body) });
+  if (res.ok) {
+    document.getElementById('settings-modal').style.display = 'none';
+    await loadOverview();
+    showToast('Settings saved.', 'green');
+  } else {
+    const d = await res.json().catch(()=>({detail:'Error'}));
+    alert('Failed: ' + (d.detail || ''));
+  }
+}
+
 </script>
+
+<!-- Settings Modal -->
+<div class="modal-overlay" id="settings-modal" style="display:none;" onclick="if(event.target===this)this.style.display='none'">
+  <div class="modal" style="max-width:520px;" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <span class="modal-title">Dashboard Settings</span>
+      <button class="modal-close" onclick="document.getElementById('settings-modal').style.display='none'">&#x2715;</button>
+    </div>
+    <div class="modal-body">
+      <div style="display:flex;flex-direction:column;gap:14px;">
+        <div>
+          <div class="prop-label" style="margin-bottom:4px;">Organisation Name</div>
+          <input id="set-orgname" placeholder="e.g. Sunrise Pharmacy Group"
+            style="width:100%;background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:8px 10px;border-radius:6px;font-size:13px;">
+        </div>
+        <div>
+          <div class="prop-label" style="margin-bottom:4px;">Offline Threshold (hours)</div>
+          <input id="set-offline-hours" type="number" min="1" max="24"
+            style="width:100%;background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:8px 10px;border-radius:6px;font-size:13px;">
+          <div style="font-size:11px;color:var(--muted);margin-top:4px;">Devices with no check-in within this many hours are marked Offline.</div>
+        </div>
+        <div>
+          <div class="prop-label" style="margin-bottom:4px;">Long-Offline Warning (days)</div>
+          <input id="set-warning-days" type="number" min="1" max="365"
+            style="width:100%;background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:8px 10px;border-radius:6px;font-size:13px;">
+          <div style="font-size:11px;color:var(--muted);margin-top:4px;">Devices offline longer than this appear in the "Long Offline" stat card on the Overview.</div>
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:20px;">
+        <button class="btn btn-ghost" onclick="document.getElementById('settings-modal').style.display='none'">Cancel</button>
+        <button class="btn btn-primary" onclick="saveSettings()">Save Settings</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Long Offline Device Modal -->
+<div class="modal-overlay" id="long-offline-modal" style="display:none;" onclick="if(event.target===this)this.style.display='none'">
+  <div class="modal" style="max-width:600px;" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <span class="modal-title" id="long-offline-modal-title">Long-Offline Devices</span>
+      <button class="modal-close" onclick="document.getElementById('long-offline-modal').style.display='none'">&#x2715;</button>
+    </div>
+    <div class="modal-body" id="long-offline-modal-body"></div>
+  </div>
+</div>
 </body>
 </html>

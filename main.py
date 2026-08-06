@@ -134,12 +134,36 @@ def fetch_status() -> list:
         if module == "threat":
             for d in (payload.get("raw") or {}).get("detections", []):
                 machines[mk]["alerts"].append({
+                    "id":          f"td-{hostname}-{(d.get('TimeCreated') or '').replace(':','-')}",
                     "hostname":    hostname,
                     "site_name":   site_name,
+                    "source":      "defender",
                     "time":        d.get("TimeCreated"),
+                    "detected_at": d.get("TimeCreated"),
                     "threat_name": d.get("ThreatName"),
                     "severity":    d.get("Severity"),
                     "action":      d.get("ActionName"),
+                    "status":      "New",
+                })
+        if module == "playbook_alerts":
+            # Playbook-triggered alerts from process_monitor.py's rule engine.
+            # These are a separate detection channel from Defender events and
+            # need to surface on the dashboard independently.
+            for a in (payload.get("raw") or {}).get("alerts", []):
+                machines[mk]["alerts"].append({
+                    "id":          a.get("id", ""),
+                    "hostname":    hostname,
+                    "site_name":   site_name,
+                    "source":      "playbook",
+                    "time":        a.get("detected_at"),
+                    "detected_at": a.get("detected_at"),
+                    "threat_name": a.get("rule_name", "Playbook Rule Match"),
+                    "severity":    a.get("severity", "MEDIUM"),
+                    "action":      ", ".join(a.get("actions", [])),
+                    "process_name":a.get("process_name", ""),
+                    "command_line":a.get("command_line", ""),
+                    "mitre_tactic":a.get("mitre_tactic", ""),
+                    "status":      a.get("status", "New"),
                 })
     result = list(machines.values())
     _cache_set("status", result)
@@ -682,6 +706,155 @@ async def alert_webhook(request: Request, background_tasks: BackgroundTasks):
     if process_and_forward:
         background_tasks.add_task(process_and_forward, alert)
     return JSONResponse({"status": "success"})
+
+
+@app.get("/api/overview")
+async def get_overview():
+    """
+    Aggregate stats for the Overview landing page:
+    - Device online/offline counts and offline-for-N-days breakdown
+    - Alert counts by status
+    - SOC performance: MTTD and MTTR derived from alert timestamps
+    """
+    settings    = _get_settings()
+    offline_threshold_hours = settings.get("offline_threshold_hours", 1)
+    offline_days_warning    = settings.get("offline_days_warning", 7)
+
+    devices  = fetch_inventory()
+    alerts   = fetch_all_alerts()
+    machines = fetch_status()
+    now      = datetime.datetime.utcnow()
+
+    # Device counts
+    online   = []
+    offline  = []
+    long_offline = []  # offline for more than offline_days_warning days
+
+    for d in devices:
+        last_seen_str = d.get("last_seen")
+        if last_seen_str:
+            try:
+                ls = datetime.datetime.fromisoformat(last_seen_str.replace("Z", ""))
+                age_hours = (now - ls).total_seconds() / 3600
+                if age_hours <= offline_threshold_hours:
+                    online.append(d)
+                else:
+                    offline.append(d)
+                    if age_hours > offline_days_warning * 24:
+                        long_offline.append({**d, "offline_days": round(age_hours / 24, 1)})
+            except Exception:
+                offline.append(d)
+        else:
+            offline.append(d)
+
+    # Alert counts by status
+    status_counts = {"New": 0, "Open": 0, "Closed": 0}
+    for a in alerts:
+        st = a.get("status", "New")
+        status_counts[st] = status_counts.get(st, 0) + 1
+
+    # SOC performance — MTTD and MTTR
+    # MTTD: time from detected_at to when status first changed to Open (created→opened)
+    # MTTR: time from detected_at to when status changed to Closed (created→resolved)
+    # We derive these from alert timestamps stored in Oracle.
+    mttd_samples = []
+    mttr_samples = []
+
+    for a in alerts:
+        detected = a.get("detected_at") or a.get("created_at") or a.get("time")
+        updated  = a.get("updated_at")
+        status   = a.get("status", "New")
+        if not detected or not updated:
+            continue
+        try:
+            dt_detected = datetime.datetime.fromisoformat(detected.replace("Z",""))
+            dt_updated  = datetime.datetime.fromisoformat(updated.replace("Z",""))
+            delta_mins  = (dt_updated - dt_detected).total_seconds() / 60
+            if delta_mins < 0:
+                continue
+            if status in ("Open", "Closed"):
+                mttd_samples.append(delta_mins)   # time to acknowledge
+            if status == "Closed":
+                mttr_samples.append(delta_mins)   # time to resolve
+        except Exception:
+            continue
+
+    def _avg(samples):
+        return round(sum(samples) / len(samples), 1) if samples else None
+
+    # Recent alerts for the overview feed (last 10)
+    recent_alerts = sorted(
+        [a for a in alerts if a.get("status") != "Closed"],
+        key=lambda x: x.get("detected_at") or x.get("time") or "",
+        reverse=True
+    )[:10]
+
+    # Playbook alert counts from status feed
+    playbook_alert_count = sum(
+        len([a for a in m.get("alerts", []) if a.get("source") == "playbook"])
+        for m in machines
+    )
+
+    return JSONResponse({
+        "devices": {
+            "total":         len(devices),
+            "online":        len(online),
+            "offline":       len(offline),
+            "long_offline":  long_offline,
+            "threshold_hours":     offline_threshold_hours,
+            "warning_days":        offline_days_warning,
+        },
+        "alerts": {
+            "new":           status_counts.get("New", 0),
+            "open":          status_counts.get("Open", 0),
+            "closed":        status_counts.get("Closed", 0),
+            "total":         len(alerts),
+            "playbook":      playbook_alert_count,
+        },
+        "soc_performance": {
+            "mttd_minutes":  _avg(mttd_samples),
+            "mttr_minutes":  _avg(mttr_samples),
+            "sample_count":  len(mttd_samples),
+        },
+        "recent_alerts":   recent_alerts,
+    })
+
+
+SETTINGS_KEY = "config/dashboard_settings.json"
+
+def _get_settings() -> dict:
+    client = s3()
+    if not client:
+        return {}
+    return s3_get(client, SETTINGS_KEY) or {}
+
+
+@app.get("/api/settings")
+async def get_settings():
+    return JSONResponse(_get_settings())
+
+
+@app.put("/api/settings")
+async def update_settings(request: Request, x_admin_key: Optional[str] = Header(None)):
+    require_admin(x_admin_key)
+    body = await request.json()
+    # Validate known settings
+    allowed_keys = {
+        "offline_threshold_hours",  # hours before a device is considered offline (default: 1)
+        "offline_days_warning",     # days offline before flagged in overview (default: 7)
+        "dashboard_title",
+        "org_name",
+    }
+    settings = _get_settings()
+    for k, v in body.items():
+        if k in allowed_keys:
+            settings[k] = v
+    settings["updated_at"] = datetime.datetime.utcnow().isoformat()
+    client = s3(commander=True)
+    if not client:
+        raise HTTPException(503, "Commander credentials not configured")
+    s3_put(client, SETTINGS_KEY, settings)
+    return JSONResponse(settings)
 
 
 @app.get("/health")
