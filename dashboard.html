@@ -668,24 +668,143 @@ function renderDeviceApps(detail) {
   </table></div>`;
 }
 
+const TL_ICONS = {
+  process_creation:  { icon: '&#x2699;',  label: 'Process',   cls: 'blue' },
+  logon:             { icon: '&#x1F511;', label: 'Logon',     cls: 'green' },
+  logon_failure:     { icon: '&#x26A0;',  label: 'Logon Fail',cls: 'red' },
+  logoff:            { icon: '&#x1F6AA;', label: 'Logoff',    cls: 'muted' },
+  service_installed: { icon: '&#x1F6E0;', label: 'Service',   cls: 'amber' },
+  service_crash:     { icon: '&#x1F4A5;', label: 'Crash',     cls: 'red' },
+  threat_detected:   { icon: '&#x1F6A8;', label: 'Threat',    cls: 'red' },
+  threat_action:     { icon: '&#x1F6A8;', label: 'Threat',    cls: 'red' },
+  rule_match:        { icon: '&#x1F4CB;', label: 'Rule',      cls: 'amber' },
+  usb_execution:     { icon: '&#x1F4BE;', label: 'USB',       cls: 'amber' },
+  suspicious_process:{ icon: '&#x1F534;', label: 'Suspicious',cls: 'red' },
+  network_connection:{ icon: '&#x1F310;', label: 'Network',   cls: 'blue' },
+  task_created:      { icon: '&#x1F5D3;', label: 'Task',      cls: 'amber' },
+  task_modified:     { icon: '&#x1F5D3;', label: 'Task',      cls: 'amber' },
+  default:           { icon: '&#x25CF;',  label: 'Event',     cls: 'muted' },
+};
+
+// Filter state for timeline
+let tlFilter = '';
+
 function renderDeviceTimeline(detail) {
-  const events = detail.timeline || [];
-  if (!events.length) {
-    document.getElementById('sub-timeline').innerHTML = '<div class="empty">No timeline events yet.<br><span style="font-size:12px;margin-top:8px;display:block;">Events are collected by USB Lockdown and Process Monitor modules.</span></div>'; return;
+  const allEvents = (detail.timeline || []).slice().reverse();
+  const el = document.getElementById('sub-timeline');
+
+  if (!allEvents.length) {
+    el.innerHTML = `<div class="empty">
+      No timeline events yet.<br>
+      <span style="font-size:12px;margin-top:8px;display:block;">
+        Timeline is collected every 30 minutes by <strong>timeline_collector.py</strong>.
+        The first collection runs 30 minutes after agent startup.<br><br>
+        <strong>Sources once running:</strong> Process creation (Security log 4688),
+        user logons/logoffs (4624/4625/4647), new services (System log 7045),
+        Defender threat actions (1116/1117), USB events, playbook rule matches,
+        and a live network connection snapshot.
+      </span>
+    </div>`;
+    return;
   }
-  document.getElementById('sub-timeline').innerHTML = events.slice().reverse().map(e => {
-    const src = e.source || 'unknown';
-    const desc = e.threat_name || e.path || e.drive || '';
-    const detail_txt = [e.pid && 'PID '+e.pid, e.verdict && 'verdict:'+e.verdict, e.action && 'action:'+e.action].filter(Boolean).join(' | ');
+
+  // Filter bar
+  const filterBar = `<div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;">
+    <input id="tl-search" value="${tlFilter}" placeholder="Filter by process, user, IP..."
+      style="flex:1;min-width:180px;background:var(--surface2);border:1px solid var(--border);
+             color:var(--text);padding:6px 10px;border-radius:6px;font-size:12px;"
+      oninput="tlFilter=this.value;renderDeviceTimeline(${JSON.stringify(JSON.stringify(detail))})">
+    <select id="tl-type" style="background:var(--surface2);border:1px solid var(--border);
+             color:var(--text);padding:6px 10px;border-radius:6px;font-size:12px;"
+      onchange="renderDeviceTimeline(${JSON.stringify(JSON.stringify(detail))})">
+      <option value="">All event types</option>
+      ${[...new Set(allEvents.map(e=>e.event_type||e.source).filter(Boolean))].sort()
+          .map(t=>`<option>${t}</option>`).join('')}
+    </select>
+    <span style="font-size:12px;color:var(--muted);padding:6px 0;">${allEvents.length} events</span>
+  </div>`;
+
+  const typeFilter = document.getElementById('tl-type')?.value || '';
+  const search = tlFilter.toLowerCase();
+
+  const filtered = allEvents.filter(e => {
+    if (typeFilter && (e.event_type||e.source) !== typeFilter) return false;
+    if (search) {
+      const haystack = [e.process_name,e.command_line,e.user,e.threat_name,
+                        e.remote_address,e.source_ip,e.path].join(' ').toLowerCase();
+      if (!haystack.includes(search)) return false;
+    }
+    return true;
+  });
+
+  const rows = filtered.map(e => {
+    const etype = e.event_type || e.source || 'default';
+    const meta  = TL_ICONS[etype] || TL_ICONS.default;
+    let desc = '', detail_parts = [];
+
+    switch(etype) {
+      case 'process_creation':
+      case 'suspicious_process':
+      case 'usb_execution':
+        desc = e.process_name || e.path?.split('\\').pop() || '(process)';
+        if (e.command_line) detail_parts.push('cmd: ' + e.command_line.substring(0,200));
+        if (e.user)         detail_parts.push('user: ' + e.user);
+        if (e.pid)          detail_parts.push('PID: ' + e.pid);
+        if (e.verdict)      detail_parts.push('verdict: ' + e.verdict);
+        break;
+      case 'logon':
+      case 'logon_failure':
+      case 'logoff':
+        desc = e.user || '(user)';
+        if (e.logon_type)  detail_parts.push('type: ' + e.logon_type);
+        if (e.source_ip && e.source_ip !== '-') detail_parts.push('from: ' + e.source_ip);
+        break;
+      case 'service_installed':
+      case 'service_crash':
+        desc = e.threat_name || e.path?.split('\\').pop() || '(service)';
+        if (e.path)   detail_parts.push('file: ' + e.path);
+        if (e.user)   detail_parts.push('acct: ' + e.user);
+        break;
+      case 'threat_detected':
+      case 'threat_action':
+      case 'rule_match':
+        desc = e.threat_name || '(threat)';
+        if (e.severity)  detail_parts.push('sev: ' + e.severity);
+        if (e.action)    detail_parts.push('action: ' + e.action);
+        if (e.path)      detail_parts.push(e.path.substring(0,120));
+        break;
+      case 'network_connection':
+        desc = `${e.process_name || '?'} → ${e.remote_address}:${e.remote_port}`;
+        if (e.local_address) detail_parts.push('local: ' + e.local_address + ':' + (e.local_port||''));
+        break;
+      case 'task_created':
+      case 'task_modified':
+        desc = e.threat_name || '(task)';
+        if (e.user) detail_parts.push('by: ' + e.user);
+        break;
+      default:
+        desc = e.threat_name || e.process_name || e.path || '(event)';
+        if (e.action) detail_parts.push(e.action);
+    }
+
+    const detail_str = detail_parts.join(' | ');
     return `<div class="timeline-item">
-      <div class="timeline-dot ${src}"></div>
+      <div class="timeline-dot ${meta.cls}" title="${etype}"></div>
       <div class="timeline-content">
-        <div class="timeline-time">${fmtTS(e.time)} &nbsp;·&nbsp; ${src}</div>
-        <div class="timeline-event">${desc || '(event)'}</div>
-        ${detail_txt ? `<div class="timeline-detail">${detail_txt}</div>` : ''}
+        <div class="timeline-time">
+          <span style="background:var(--surface2);padding:1px 6px;border-radius:4px;
+                       font-size:10px;color:var(--muted);margin-right:6px;">${meta.icon} ${meta.label}</span>
+          ${fmtTS(e.time)}
+        </div>
+        <div class="timeline-event">${desc}</div>
+        ${detail_str ? `<div class="timeline-detail">${detail_str}</div>` : ''}
       </div>
     </div>`;
   }).join('');
+
+  el.innerHTML = filterBar + (filtered.length
+    ? rows
+    : '<div style="color:var(--muted);padding:16px 0;font-size:13px;">No events match the current filter.</div>');
 }
 
 // Sub-tab switching (device modal)

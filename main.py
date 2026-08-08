@@ -199,52 +199,126 @@ def fetch_device_detail(site_name: str, hostname: str) -> dict:
     # Base device record
     device = s3_get(client, f"{DEVICES_PREFIX}{site_name}/{hostname}.json") or {}
 
-    # All module reports
+    # All module reports — includes the new 'timeline' and 'playbook_alerts' modules
+    ALL_MODULES = ["defender", "dns", "threat", "usb", "process_monitor",
+                   "playbook_alerts", "timeline"]
     modules = {}
-    for module in ["defender", "dns", "threat", "usb", "process_monitor"]:
+    for module in ALL_MODULES:
         key = f"{REPORTS_PREFIX}{site_name}/{hostname}/{module}/latest.json"
         data = s3_get(client, key)
         if data:
             modules[module] = data
 
-    # Installed applications (from defender report if available)
+    # ---- Installed applications ----
+    # The orchestrator writes installed_apps at the TOP LEVEL of the report
+    # dict (not inside 'raw'), because the reporter's build_payload wraps the
+    # whole file as payload["raw"]. So to_dict() puts it in raw.installed_apps.
     apps = []
     if "defender" in modules:
         raw = modules["defender"].get("raw") or {}
         apps = raw.get("installed_apps", [])
 
-    # Timeline from existing reports (usb + process_monitor + threat recent events)
+    # ---- Timeline ----
+    # Primary source: timeline_collector.py writes a 'timeline' module report
+    # with a flat 'events' list covering process creation, logons, services,
+    # network connections, and Defender actions from the Windows Event Log.
+    # Fallback: USB and Process Monitor recent_events snapshots (older data).
     timeline = []
-    for module in ["usb", "process_monitor"]:
-        if module in modules:
-            for evt in (modules[module].get("raw") or {}).get("recent_events", []):
-                timeline.append({
-                    "source": module,
-                    "time":   evt.get("time"),
-                    "action": evt.get("action", ""),
-                    "path":   evt.get("path", ""),
-                    "drive":  evt.get("drive", ""),
-                    "pid":    evt.get("pid"),
-                    "verdict":evt.get("verdict", ""),
-                })
+
+    # 1. Rich timeline from timeline_collector (preferred source)
+    if "timeline" in modules:
+        raw_tl = modules["timeline"].get("raw") or {}
+        for evt in raw_tl.get("events", []):
+            # Normalise timestamp key: timeline_collector uses 'timestamp'
+            timeline.append({
+                "source":      evt.get("event_type", "event"),
+                "time":        evt.get("timestamp"),
+                "event_type":  evt.get("event_type", ""),
+                "process_name":evt.get("process_name", ""),
+                "pid":         evt.get("pid"),
+                "parent_name": evt.get("parent_path", ""),
+                "command_line":evt.get("command_line", ""),
+                "user":        evt.get("user", ""),
+                "path":        evt.get("process_path") or evt.get("service_file", ""),
+                # Logon fields
+                "logon_type":  evt.get("logon_type", ""),
+                "source_ip":   evt.get("source_ip", ""),
+                # Network fields
+                "remote_address": evt.get("remote_address", ""),
+                "remote_port":    evt.get("remote_port"),
+                "local_address":  evt.get("local_address", ""),
+                # Threat fields
+                "threat_name":    evt.get("threat_name", ""),
+                "severity":       evt.get("severity", ""),
+                "action":         evt.get("action", ""),
+            })
+
+    # 2. USB drive events (fallback / complement)
+    if "usb" in modules:
+        for evt in (modules["usb"].get("raw") or {}).get("recent_events", []):
+            timeline.append({
+                "source":      "usb",
+                "time":        evt.get("time"),
+                "event_type":  "usb_execution",
+                "process_name":evt.get("path", "").split("\\")[-1],
+                "pid":         evt.get("pid"),
+                "path":        evt.get("path", ""),
+                "drive":       evt.get("drive", ""),
+                "action":      evt.get("action", ""),
+            })
+
+    # 3. Process Monitor suspicious matches (complement)
+    if "process_monitor" in modules:
+        for evt in (modules["process_monitor"].get("raw") or {}).get("recent_events", []):
+            timeline.append({
+                "source":      "process_monitor",
+                "time":        evt.get("time"),
+                "event_type":  "suspicious_process",
+                "process_name":evt.get("path", "").split("\\")[-1],
+                "pid":         evt.get("pid"),
+                "path":        evt.get("path", ""),
+                "verdict":     evt.get("verdict", ""),
+                "action":      evt.get("action", ""),
+            })
+
+    # 4. Defender threat detections
     if "threat" in modules:
         for d in (modules["threat"].get("raw") or {}).get("detections", []):
             timeline.append({
-                "source":      "threat",
+                "source":      "defender",
                 "time":        d.get("TimeCreated"),
-                "action":      d.get("ActionName", ""),
+                "event_type":  "threat_detected",
                 "threat_name": d.get("ThreatName", ""),
                 "severity":    d.get("Severity", ""),
                 "path":        d.get("Path", ""),
+                "action":      d.get("ActionName", ""),
             })
-    timeline.sort(key=lambda x: x.get("time") or "")
-    timeline = timeline[-200:]   # cap at last 200 events
 
-    # Alerts for this device
+    # 5. Playbook rule matches
+    if "playbook_alerts" in modules:
+        for a in (modules["playbook_alerts"].get("raw") or {}).get("alerts", []):
+            timeline.append({
+                "source":      "playbook",
+                "time":        a.get("detected_at"),
+                "event_type":  "rule_match",
+                "process_name":a.get("process_name", ""),
+                "pid":         a.get("pid"),
+                "command_line":a.get("command_line", ""),
+                "threat_name": a.get("rule_name", ""),
+                "severity":    a.get("severity", ""),
+                "action":      ", ".join(a.get("actions", [])),
+            })
+
+    # Sort by time and cap
+    timeline.sort(key=lambda x: x.get("time") or "")
+    timeline = timeline[-500:]
+
+    # ---- Device alerts (persisted to alerts/ prefix) ----
     alerts = []
     for obj in list_prefix(client, f"{ALERTS_PREFIX}{site_name}/{hostname}/"):
         try:
-            alerts.append(json.loads(client.get_object(Bucket=ORACLE_BUCKET, Key=obj["Key"])["Body"].read()))
+            alerts.append(json.loads(
+                client.get_object(Bucket=ORACLE_BUCKET, Key=obj["Key"])["Body"].read()))
         except Exception:
             continue
     alerts.sort(key=lambda x: x.get("created_at") or "", reverse=True)
@@ -364,29 +438,49 @@ async def get_timeline(site_name: str, hostname: str, pid: Optional[int] = None)
 async def get_all_alerts(status: Optional[str] = None, site: Optional[str] = None,
                           hostname: Optional[str] = None, severity: Optional[str] = None):
     alerts = fetch_all_alerts()
-    # Also pull live threat detections from status feed and auto-create alert records
-    client = s3()
+    # Pull live detections from the status feed and auto-persist any that
+    # aren't already in the persistent alerts/ prefix. We use the COMMANDER
+    # client here because the read-only client cannot write — using the
+    # read-only client was the bug that caused alerts to appear in-memory
+    # but never get saved to Oracle.
+    write_client = s3(commander=True)    # write capable
+    read_client  = s3(commander=False)   # read capable (for status feed)
     existing_ids = {a["id"] for a in alerts}
+
     for m in fetch_status():
         for raw_alert in m.get("alerts", []):
-            aid = f"auto-{m['site_name']}-{m['hostname']}-{(raw_alert.get('time') or '').replace(':', '-')}"
-            if aid not in existing_ids and client:
-                new_alert = {
-                    "id":          aid,
-                    "site_name":   m["site_name"],
-                    "hostname":    m["hostname"],
-                    "status":      "New",
-                    "severity":    raw_alert.get("severity", "MEDIUM"),
-                    "threat_name": raw_alert.get("threat_name", "Unknown"),
-                    "action":      raw_alert.get("action", ""),
-                    "created_at":  raw_alert.get("time") or datetime.datetime.utcnow().isoformat(),
-                    "updated_at":  datetime.datetime.utcnow().isoformat(),
-                    "notes":       "",
-                }
-                _persist_alert(client, new_alert)
-                alerts.append(new_alert)
-                existing_ids.add(aid)
-    # Filter
+            # Build a stable ID from source + hostname + timestamp
+            src  = raw_alert.get("source", "unknown")
+            ts   = (raw_alert.get("detected_at") or raw_alert.get("time") or "")
+            aid  = raw_alert.get("id") or f"auto-{src}-{m['site_name']}-{m['hostname']}-{ts.replace(':', '-')}"
+            if aid in existing_ids:
+                continue
+            new_alert = {
+                "id":          aid,
+                "site_name":   m["site_name"],
+                "hostname":    m["hostname"],
+                "source":      src,
+                "status":      "New",
+                "severity":    raw_alert.get("severity") or "MEDIUM",
+                "threat_name": raw_alert.get("threat_name") or "Unknown Threat",
+                "action":      raw_alert.get("action") or "",
+                "process_name":raw_alert.get("process_name") or "",
+                "command_line":raw_alert.get("command_line") or "",
+                "mitre_tactic":raw_alert.get("mitre_tactic") or "",
+                "detected_at": ts,
+                "created_at":  datetime.datetime.utcnow().isoformat(timespec="milliseconds"),
+                "updated_at":  datetime.datetime.utcnow().isoformat(timespec="milliseconds"),
+                "notes":       "",
+            }
+            # Persist with the write-capable commander client
+            if write_client:
+                _persist_alert(write_client, new_alert)
+            alerts.append(new_alert)
+            existing_ids.add(aid)
+            # Invalidate the alerts cache so the next call sees the new entry
+            _CACHE.pop("alerts", None)
+
+    # Apply filters
     if status:
         alerts = [a for a in alerts if a.get("status") == status]
     if site:
@@ -394,7 +488,8 @@ async def get_all_alerts(status: Optional[str] = None, site: Optional[str] = Non
     if hostname:
         alerts = [a for a in alerts if a.get("hostname") == hostname]
     if severity:
-        alerts = [a for a in alerts if a.get("severity", "").upper() == severity.upper()]
+        alerts = [a for a in alerts if (a.get("severity") or "").upper() == severity.upper()]
+
     return JSONResponse({"alerts": alerts})
 
 
