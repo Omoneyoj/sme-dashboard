@@ -688,8 +688,10 @@ const TL_ICONS = {
 
 // Filter state for timeline
 let tlFilter = '';
+let _tlDetail = null;  // stores current device detail for re-render without re-serialising
 
 function renderDeviceTimeline(detail) {
+  _tlDetail = detail;  // save for filter re-renders without re-serialising
   const allEvents = (detail.timeline || []).slice().reverse();
   const el = document.getElementById('sub-timeline');
 
@@ -713,10 +715,10 @@ function renderDeviceTimeline(detail) {
     <input id="tl-search" value="${tlFilter}" placeholder="Filter by process, user, IP..."
       style="flex:1;min-width:180px;background:var(--surface2);border:1px solid var(--border);
              color:var(--text);padding:6px 10px;border-radius:6px;font-size:12px;"
-      oninput="tlFilter=this.value;renderDeviceTimeline(${JSON.stringify(JSON.stringify(detail))})">
+      oninput="tlFilter=this.value;if(_tlDetail)renderDeviceTimeline(_tlDetail)">
     <select id="tl-type" style="background:var(--surface2);border:1px solid var(--border);
              color:var(--text);padding:6px 10px;border-radius:6px;font-size:12px;"
-      onchange="renderDeviceTimeline(${JSON.stringify(JSON.stringify(detail))})">
+      onchange="if(_tlDetail)renderDeviceTimeline(_tlDetail)">
       <option value="">All event types</option>
       ${[...new Set(allEvents.map(e=>e.event_type||e.source).filter(Boolean))].sort()
           .map(t=>`<option>${t}</option>`).join('')}
