@@ -654,18 +654,55 @@ function renderDeviceAlerts(detail) {
     </div>`).join('');
 }
 
+function fmtInstallDate(d) {
+  if (!d || d.length < 8) return '-';
+  return `${d.substring(0,4)}-${d.substring(4,6)}-${d.substring(6,8)}`;
+}
+
+function riskBadge(level) {
+  const map = {
+    critical: 'badge-red',
+    high:     'badge-red',
+    medium:   'badge-amber',
+    low:      'badge-muted',
+  };
+  return level ? `<span class="badge ${map[level]||'badge-muted'}" title="Risk: ${level}. Based on software category, age, and known attack surface.">${level.toUpperCase()}</span>` : '<span class="badge badge-muted">-</span>';
+}
+
 function renderDeviceApps(detail) {
   const apps = detail.apps || [];
   if (!apps.length) {
-    document.getElementById('sub-apps').innerHTML = '<div class="empty">No application data collected yet.<br><span style="font-size:12px;margin-top:8px;display:block;">Application inventory is collected during the daily Defender audit.</span></div>'; return;
+    document.getElementById('sub-apps').innerHTML = `<div class="empty">No application data yet.<br>
+      <span style="font-size:12px;margin-top:8px;display:block;">Collected during the daily Defender audit (--apply needed for full data).</span></div>`;
+    return;
   }
-  document.getElementById('sub-apps').innerHTML = `<div class="scroll-table"><table>
-    <thead><tr><th>Name</th><th>Version</th><th>Vendor</th><th>Risk</th></tr></thead>
-    <tbody>${apps.map(a => `<tr>
-      <td>${a.name||'-'}</td><td>${a.version||'-'}</td><td>${a.vendor||'-'}</td>
-      <td>${a.cve_count ? `<span class="badge badge-red">${a.cve_count} CVE</span>` : '<span class="badge badge-muted">-</span>'}</td>
-    </tr>`).join('')}</tbody>
-  </table></div>`;
+  const search = document.getElementById('apps-search')?.value?.toLowerCase() || '';
+  const filtered = search ? apps.filter(a => (a.name||'').toLowerCase().includes(search) || (a.vendor||'').toLowerCase().includes(search)) : apps;
+  const riskOrder = {critical:0,high:1,medium:2,low:3};
+  const sorted = [...filtered].sort((a,b) => (riskOrder[a.risk_level]??4) - (riskOrder[b.risk_level]??4));
+
+  document.getElementById('sub-apps').innerHTML = `
+    <div style="display:flex;gap:8px;margin-bottom:10px;align-items:center;">
+      <input id="apps-search" placeholder="Search name or vendor..." value="${search}"
+        style="flex:1;background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:6px;font-size:12px;"
+        oninput="renderDeviceApps(_tlDetail||detail)">
+      <span style="font-size:12px;color:var(--muted);">${sorted.length} / ${apps.length} apps</span>
+    </div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:8px;">
+      Risk scored locally: <strong style="color:var(--red)">Critical/High</strong> = dangerous or outdated categories (RATs, EOL software >3yr),
+      <strong style="color:var(--amber)">Medium</strong> = network-facing apps, <strong style="color:var(--muted)">Low</strong> = standard software.
+    </div>
+    <div class="scroll-table"><table>
+      <thead><tr><th>Name</th><th>Version</th><th>Vendor</th><th>Install Date</th><th>Modified Date</th><th>Risk</th></tr></thead>
+      <tbody>${sorted.map(a => `<tr>
+        <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${a.name||''}">${a.name||'-'}</td>
+        <td style="font-family:monospace;font-size:11px;">${a.version||'-'}</td>
+        <td style="font-size:11px;color:var(--muted);max-width:150px;overflow:hidden;text-overflow:ellipsis;">${a.vendor||'-'}</td>
+        <td style="font-size:11px;">${fmtInstallDate(a.install_date)}</td>
+        <td style="font-size:11px;color:var(--muted);">${fmtInstallDate(a.modified_date)}</td>
+        <td>${riskBadge(a.risk_level)}</td>
+      </tr>`).join('')}</tbody>
+    </table></div>`;
 }
 
 const TL_ICONS = {
@@ -1339,11 +1376,14 @@ function openRuleEditor(jsonStr) {
         <input id="re-desc" value="${escAttr(rule?.description||'')}" placeholder="Optional description"
           style="width:100%;background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:8px 10px;border-radius:6px;font-size:13px;margin-bottom:16px;">
 
-        <div style="font-size:14px;font-weight:600;margin-bottom:10px;">Conditions <span style="font-size:11px;font-weight:400;color:var(--muted);">(all specified conditions must match)</span></div>
+        <div style="font-size:14px;font-weight:600;margin-bottom:10px;">Conditions <span style="font-size:11px;font-weight:400;color:var(--muted);">(all specified conditions must match — leave blank to skip)</span></div>
         <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:16px;">
-          ${condField('re-parent', 'Parent Process', (conds.parent_process||[]).join(', '), 'e.g. winword.exe, excel.exe')}
-          ${condField('re-procname', 'Process Name', (conds.process_name||[]).join(', '), 'e.g. cmd.exe, powershell.exe')}
-          ${condField('re-cmdline', 'Command Line Contains', (conds.command_line_contains||[]).join(', '), 'e.g. -encodedcommand, -enc')}
+          ${condField('re-parent',   'Parent Process',          (conds.parent_process||[]).join(', '),          'e.g. winword.exe, excel.exe')}
+          ${condField('re-procname', 'Process Name',            (conds.process_name||[]).join(', '),            'e.g. cmd.exe, powershell.exe, certutil.exe')}
+          ${condField('re-cmdline',  'Command Line Contains',   (conds.command_line_contains||[]).join(', '),   'e.g. -encodedcommand, urlcache, -split')}
+          ${condField('re-ip',       'IP Address Matches',      (conds.ip_address_matches||[]).join(', '),      'e.g. 192.168.1.100, 10.0.0. (prefix match)')}
+          ${condField('re-hash',     'File Hash (SHA256)',      (conds.file_hash_matches||[]).join(', '),       'e.g. a1b2c3d4... (full SHA256, comma-separated)')}
+          ${condField('re-domain',   'Domain/URL Contains',     (conds.domain_contains||[]).join(', '),         'e.g. pastebin.com, evil.ru, c2-server')}
         </div>
 
         <div style="font-size:14px;font-weight:600;margin-bottom:10px;">Actions <span style="font-size:11px;font-weight:400;color:var(--muted);">(executed in order when rule matches)</span></div>
@@ -1389,9 +1429,15 @@ async function saveRule(existingId) {
   const parent   = parseCSV(document.getElementById('re-parent').value);
   const procname = parseCSV(document.getElementById('re-procname').value);
   const cmdline  = parseCSV(document.getElementById('re-cmdline').value);
+  const ipaddrs  = parseCSV(document.getElementById('re-ip').value);
+  const hashes   = document.getElementById('re-hash').value.split(',').map(s=>s.trim()).filter(s=>s.length===64);
+  const domains  = parseCSV(document.getElementById('re-domain').value);
   if (parent.length)   conditions.parent_process        = parent;
   if (procname.length) conditions.process_name          = procname;
   if (cmdline.length)  conditions.command_line_contains = cmdline;
+  if (ipaddrs.length)  conditions.ip_address_matches    = ipaddrs;
+  if (hashes.length)   conditions.file_hash_matches     = hashes;
+  if (domains.length)  conditions.domain_contains       = domains;
 
   const actions = ALLOWED_ACTIONS
     .filter(a => document.getElementById('re-act-'+a.id)?.checked)
@@ -1575,8 +1621,22 @@ async function loadOverview() {
   document.getElementById('ov-mttd').textContent        = fmtMinutes(soc.mttd_minutes);
   document.getElementById('ov-mttr').textContent        = fmtMinutes(soc.mttr_minutes);
   // Good MTTD target: 30 min; Good MTTR: 120 min
-  document.getElementById('ov-mttd-bar').style.width = perfBarWidth(soc.mttd_minutes, 30) + '%';
-  document.getElementById('ov-mttr-bar').style.width = perfBarWidth(soc.mttr_minutes, 120) + '%';
+  const mttdTarget = soc.mttd_target_minutes || 30;
+  const mttrTarget = soc.mttr_target_minutes || 120;
+  const mttdBar = document.getElementById('ov-mttd-bar');
+  const mttrBar = document.getElementById('ov-mttr-bar');
+  mttdBar.style.width = perfBarWidth(soc.mttd_minutes, mttdTarget) + '%';
+  mttrBar.style.width = perfBarWidth(soc.mttr_minutes, mttrTarget) + '%';
+  // Green when meeting target, amber when within 2x, red when worse
+  const mttdRatio = soc.mttd_minutes ? soc.mttd_minutes / mttdTarget : 0;
+  const mttrRatio = soc.mttr_minutes ? soc.mttr_minutes / mttrTarget : 0;
+  mttdBar.style.background = mttdRatio <= 1 ? 'var(--green)' : mttdRatio <= 2 ? 'var(--amber)' : 'var(--red)';
+  mttrBar.style.background = mttrRatio <= 1 ? 'var(--green)' : mttrRatio <= 2 ? 'var(--amber)' : 'var(--red)';
+  // Update stat card subtitles with target
+  document.querySelector('#ov-mttd').nextElementSibling.nextElementSibling.textContent =
+    `Target: ${fmtMinutes(mttdTarget)} | Avg: ${soc.mttd_minutes ? fmtMinutes(soc.mttd_minutes) : 'N/A'}`;
+  document.querySelector('#ov-mttr').nextElementSibling.nextElementSibling.textContent =
+    `Target: ${fmtMinutes(mttrTarget)} | Avg: ${soc.mttr_minutes ? fmtMinutes(soc.mttr_minutes) : 'N/A'}`;
 
   // Recent alerts feed
   const feed = _overviewData.recent_alerts || [];
@@ -1608,9 +1668,11 @@ let _currentSettings = {};
 async function openSettings() {
   const res = await api('/api/settings');
   if (res.ok) _currentSettings = await res.json();
-  document.getElementById('set-orgname').value       = _currentSettings.org_name || '';
-  document.getElementById('set-offline-hours').value = _currentSettings.offline_threshold_hours || 1;
-  document.getElementById('set-warning-days').value  = _currentSettings.offline_days_warning || 7;
+  document.getElementById('set-orgname').value        = _currentSettings.org_name || '';
+  document.getElementById('set-offline-hours').value  = _currentSettings.offline_threshold_hours || 1;
+  document.getElementById('set-warning-days').value   = _currentSettings.offline_days_warning || 7;
+  document.getElementById('set-mttd-target').value    = _currentSettings.mttd_target_minutes || 30;
+  document.getElementById('set-mttr-target').value    = _currentSettings.mttr_target_minutes || 120;
   document.getElementById('settings-modal').style.display = 'flex';
 }
 
@@ -1620,6 +1682,8 @@ async function saveSettings() {
     org_name:                document.getElementById('set-orgname').value.trim(),
     offline_threshold_hours: parseInt(document.getElementById('set-offline-hours').value) || 1,
     offline_days_warning:    parseInt(document.getElementById('set-warning-days').value) || 7,
+    mttd_target_minutes:     parseInt(document.getElementById('set-mttd-target').value) || 30,
+    mttr_target_minutes:     parseInt(document.getElementById('set-mttr-target').value) || 120,
   };
   const res = await api('/api/settings', { method: 'PUT', body: JSON.stringify(body) });
   if (res.ok) {
@@ -1659,6 +1723,18 @@ async function saveSettings() {
           <input id="set-warning-days" type="number" min="1" max="365"
             style="width:100%;background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:8px 10px;border-radius:6px;font-size:13px;">
           <div style="font-size:11px;color:var(--muted);margin-top:4px;">Devices offline longer than this appear in the "Long Offline" stat card on the Overview.</div>
+        </div>
+        <div>
+          <div class="prop-label" style="margin-bottom:4px;">MTTD Target (minutes)</div>
+          <input id="set-mttd-target" type="number" min="1" max="10080"
+            style="width:100%;background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:8px 10px;border-radius:6px;font-size:13px;">
+          <div style="font-size:11px;color:var(--muted);margin-top:4px;">Mean Time to Detect target. Progress bar is green when actual MTTD meets this. Default: 30 min.</div>
+        </div>
+        <div>
+          <div class="prop-label" style="margin-bottom:4px;">MTTR Target (minutes)</div>
+          <input id="set-mttr-target" type="number" min="1" max="43200"
+            style="width:100%;background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:8px 10px;border-radius:6px;font-size:13px;">
+          <div style="font-size:11px;color:var(--muted);margin-top:4px;">Mean Time to Respond target. Progress bar is green when actual MTTR meets this. Default: 120 min.</div>
         </div>
       </div>
       <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:20px;">

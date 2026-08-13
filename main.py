@@ -963,6 +963,8 @@ async def get_overview():
     settings    = _get_settings()
     offline_threshold_hours = settings.get("offline_threshold_hours", 1)
     offline_days_warning    = settings.get("offline_days_warning", 7)
+    mttd_target_minutes     = int(settings.get("mttd_target_minutes", 30))
+    mttr_target_minutes     = int(settings.get("mttr_target_minutes", 120))
 
     devices  = fetch_inventory()
     alerts   = fetch_all_alerts()
@@ -1058,9 +1060,11 @@ async def get_overview():
             "playbook":      playbook_alert_count,
         },
         "soc_performance": {
-            "mttd_minutes":  _avg(mttd_samples),
-            "mttr_minutes":  _avg(mttr_samples),
-            "sample_count":  len(mttd_samples),
+            "mttd_minutes":        _avg(mttd_samples),
+            "mttr_minutes":        _avg(mttr_samples),
+            "sample_count":        len(mttd_samples),
+            "mttd_target_minutes": mttd_target_minutes,
+            "mttr_target_minutes": mttr_target_minutes,
         },
         "recent_alerts":   recent_alerts,
     })
@@ -1086,10 +1090,12 @@ async def update_settings(request: Request, x_admin_key: Optional[str] = Header(
     body = await request.json()
     # Validate known settings
     allowed_keys = {
-        "offline_threshold_hours",  # hours before a device is considered offline (default: 1)
-        "offline_days_warning",     # days offline before flagged in overview (default: 7)
+        "offline_threshold_hours",   # hours before a device is considered offline (default: 1)
+        "offline_days_warning",      # days offline before flagged in overview (default: 7)
         "dashboard_title",
         "org_name",
+        "mttd_target_minutes",       # admin-set MTTD target in minutes (default: 30)
+        "mttr_target_minutes",       # admin-set MTTR target in minutes (default: 120)
     }
     settings = _get_settings()
     for k, v in body.items():
