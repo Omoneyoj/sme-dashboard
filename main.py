@@ -5,10 +5,41 @@ Central Dashboard - Server
 import datetime
 import json
 import os
+import re
 import time
 import uuid
 from pathlib import Path
 from typing import Dict, List, Optional
+
+
+def _parse_utc(s: str) -> Optional[datetime.datetime]:
+    """
+    Parse any ISO timestamp to a timezone-NAIVE UTC datetime.
+
+    Handles all formats found in the wild:
+      - "2026-08-08T17:11:40.4871525+01:00"  (timezone offset, sub-microsecond)
+      - "2026-08-08T17:11:40.487152Z"         (Z suffix)
+      - "2026-08-08T17:11:40.487152"          (naive, assumed UTC)
+
+    The MTTD/MTTR calculation previously raised TypeError when mixing
+    timezone-aware (Defender TimeCreated) and naive (our updated_at) datetimes.
+    Python silently caught the exception and skipped all samples, giving N/A.
+    """
+    if not s:
+        return None
+    try:
+        # 1. Truncate sub-microsecond precision (Python max is 6 digits)
+        s = re.sub(r'(\.\d{6})\d+', r'\1', s.strip())
+        # 2. Normalise Z to +00:00 for uniform parsing
+        s = s.replace('Z', '+00:00')
+        dt = datetime.datetime.fromisoformat(s)
+        if dt.tzinfo is not None:
+            # Convert to UTC, then strip timezone info so all datetimes are naive
+            utc_offset = dt.utcoffset()
+            dt = dt.replace(tzinfo=None) - utc_offset
+        return dt
+    except Exception:
+        return None
 
 import boto3
 from botocore.config import Config
@@ -132,40 +163,67 @@ def fetch_status() -> list:
             "compliant":   payload.get("compliant"),
         }
         if module == "threat":
-            for d in (payload.get("raw") or {}).get("detections", []):
+            raw = payload.get("raw") or {}
+            # 1. Defender detections (Event IDs 1116/1117)
+            for d in raw.get("detections", []):
                 machines[mk]["alerts"].append({
-                    "id":          f"td-{hostname}-{(d.get('TimeCreated') or '').replace(':','-')}",
-                    "hostname":    hostname,
-                    "site_name":   site_name,
-                    "source":      "defender",
-                    "time":        d.get("TimeCreated"),
-                    "detected_at": d.get("TimeCreated"),
-                    "threat_name": d.get("ThreatName"),
-                    "severity":    d.get("Severity"),
-                    "action":      d.get("ActionName"),
-                    # Enhanced parsing for Defender context
-                    "process_name":d.get("ProcessName", ""),
-                    "parent_name": d.get("ParentProcessName", ""),
-                    "command_line":d.get("CommandLine", ""),
-                    "file_path":   d.get("Path", ""),
-                    "status":      "New",
+                    "id":           f"td-{hostname}-{(d.get('TimeCreated') or '').replace(':','-')}",
+                    "hostname":     hostname,
+                    "site_name":    site_name,
+                    "source":       "defender",
+                    "time":         d.get("TimeCreated"),
+                    "detected_at":  d.get("TimeCreated"),
+                    "threat_name":  d.get("ThreatName"),
+                    "severity":     d.get("Severity"),
+                    "category":     d.get("Category"),
+                    "action":       d.get("ActionName"),
+                    "path":         d.get("Path"),
+                    "process_name": d.get("ProcessName") or "",
+                    "command_line": d.get("Path", "").replace("CmdLine:_", ""),
+                    "user":         d.get("DetectionUser") or "",
+                    "status":       "New",
+                })
+            # 2. Correlated rule matches — playbook rules that matched a
+            #    Defender-blocked threat. These come from threat_reporter.py's
+            #    correlate_with_playbooks() which re-evaluates each detection
+            #    against the playbook engine, catching processes that were
+            #    terminated before WMI fired.
+            for cm in raw.get("correlated_rule_matches", []):
+                machines[mk]["alerts"].append({
+                    "id":           f"cr-{hostname}-{cm.get('detected_at','').replace(':','-')}-{cm.get('rule_name','').replace(' ','_')[:20]}",
+                    "hostname":     hostname,
+                    "site_name":    site_name,
+                    "source":       "playbook_via_defender",
+                    "time":         cm.get("detected_at"),
+                    "detected_at":  cm.get("detected_at"),
+                    "threat_name":  f"[Rule] {cm.get('rule_name')} (via Defender: {cm.get('defender_threat')})",
+                    "severity":     cm.get("severity", "MEDIUM"),
+                    "action":       "rule_matched",
+                    "process_name": cm.get("process_name", ""),
+                    "command_line": cm.get("command_line", ""),
+                    "rule_name":    cm.get("rule_name", ""),
+                    "defender_threat": cm.get("defender_threat", ""),
+                    "status":       "New",
                 })
         if module == "playbook_alerts":
+            # Playbook-triggered alerts from process_monitor.py's rule engine
+            # (process was seen by WMI — Defender did NOT pre-block it).
             for a in (payload.get("raw") or {}).get("alerts", []):
                 machines[mk]["alerts"].append({
-                    "id":          a.get("id", ""),
-                    "hostname":    hostname,
-                    "site_name":   site_name,
-                    "source":      "playbook",
-                    "time":        a.get("detected_at"),
-                    "detected_at": a.get("detected_at"),
-                    "threat_name": a.get("rule_name", "Playbook Rule Match"),
-                    "severity":    a.get("severity", "MEDIUM"),
-                    "action":      ", ".join(a.get("actions", [])),
-                    "process_name":a.get("process_name", ""),
-                    "command_line":a.get("command_line", ""),
-                    "mitre_tactic":a.get("mitre_tactic", ""),
-                    "status":      a.get("status", "New"),
+                    "id":           a.get("id", ""),
+                    "hostname":     hostname,
+                    "site_name":    site_name,
+                    "source":       "playbook",
+                    "time":         a.get("detected_at"),
+                    "detected_at":  a.get("detected_at"),
+                    "threat_name":  a.get("rule_name", "Playbook Rule Match"),
+                    "severity":     a.get("severity", "MEDIUM"),
+                    "action":       ", ".join(a.get("actions", [])),
+                    "process_name": a.get("process_name", ""),
+                    "command_line": a.get("command_line", ""),
+                    "mitre_tactic": a.get("mitre_tactic", ""),
+                    "rule_name":    a.get("rule_name", ""),
+                    "status":       a.get("status", "New"),
                 })
     result = list(machines.values())
     _cache_set("status", result)
@@ -198,8 +256,10 @@ def fetch_device_detail(site_name: str, hostname: str) -> dict:
     if not client:
         return {}
 
+    # Base device record
     device = s3_get(client, f"{DEVICES_PREFIX}{site_name}/{hostname}.json") or {}
 
+    # All module reports — includes the new 'timeline' and 'playbook_alerts' modules
     ALL_MODULES = ["defender", "dns", "threat", "usb", "process_monitor",
                    "playbook_alerts", "timeline"]
     modules = {}
@@ -209,16 +269,27 @@ def fetch_device_detail(site_name: str, hostname: str) -> dict:
         if data:
             modules[module] = data
 
+    # ---- Installed applications ----
+    # The orchestrator writes installed_apps at the TOP LEVEL of the report
+    # dict (not inside 'raw'), because the reporter's build_payload wraps the
+    # whole file as payload["raw"]. So to_dict() puts it in raw.installed_apps.
     apps = []
     if "defender" in modules:
         raw = modules["defender"].get("raw") or {}
         apps = raw.get("installed_apps", [])
 
+    # ---- Timeline ----
+    # Primary source: timeline_collector.py writes a 'timeline' module report
+    # with a flat 'events' list covering process creation, logons, services,
+    # network connections, and Defender actions from the Windows Event Log.
+    # Fallback: USB and Process Monitor recent_events snapshots (older data).
     timeline = []
 
+    # 1. Rich timeline from timeline_collector (preferred source)
     if "timeline" in modules:
         raw_tl = modules["timeline"].get("raw") or {}
         for evt in raw_tl.get("events", []):
+            # Normalise timestamp key: timeline_collector uses 'timestamp'
             timeline.append({
                 "source":      evt.get("event_type", "event"),
                 "time":        evt.get("timestamp"),
@@ -229,16 +300,20 @@ def fetch_device_detail(site_name: str, hostname: str) -> dict:
                 "command_line":evt.get("command_line", ""),
                 "user":        evt.get("user", ""),
                 "path":        evt.get("process_path") or evt.get("service_file", ""),
+                # Logon fields
                 "logon_type":  evt.get("logon_type", ""),
                 "source_ip":   evt.get("source_ip", ""),
+                # Network fields
                 "remote_address": evt.get("remote_address", ""),
                 "remote_port":    evt.get("remote_port"),
                 "local_address":  evt.get("local_address", ""),
+                # Threat fields
                 "threat_name":    evt.get("threat_name", ""),
                 "severity":       evt.get("severity", ""),
                 "action":         evt.get("action", ""),
             })
 
+    # 2. USB drive events (fallback / complement)
     if "usb" in modules:
         for evt in (modules["usb"].get("raw") or {}).get("recent_events", []):
             timeline.append({
@@ -252,6 +327,7 @@ def fetch_device_detail(site_name: str, hostname: str) -> dict:
                 "action":      evt.get("action", ""),
             })
 
+    # 3. Process Monitor suspicious matches (complement)
     if "process_monitor" in modules:
         for evt in (modules["process_monitor"].get("raw") or {}).get("recent_events", []):
             timeline.append({
@@ -265,6 +341,7 @@ def fetch_device_detail(site_name: str, hostname: str) -> dict:
                 "action":      evt.get("action", ""),
             })
 
+    # 4. Defender threat detections
     if "threat" in modules:
         for d in (modules["threat"].get("raw") or {}).get("detections", []):
             timeline.append({
@@ -275,12 +352,9 @@ def fetch_device_detail(site_name: str, hostname: str) -> dict:
                 "severity":    d.get("Severity", ""),
                 "path":        d.get("Path", ""),
                 "action":      d.get("ActionName", ""),
-                # Enhanced parsing for Defender context
-                "process_name":d.get("ProcessName", ""),
-                "parent_name": d.get("ParentProcessName", ""),
-                "command_line":d.get("CommandLine", ""),
             })
 
+    # 5. Playbook rule matches
     if "playbook_alerts" in modules:
         for a in (modules["playbook_alerts"].get("raw") or {}).get("alerts", []):
             timeline.append({
@@ -295,10 +369,11 @@ def fetch_device_detail(site_name: str, hostname: str) -> dict:
                 "action":      ", ".join(a.get("actions", [])),
             })
 
-    # Robust sorting: strictly evaluate key as string to prevent TypeErrors
-    timeline.sort(key=lambda x: str(x.get("time") or ""))
+    # Sort by time and cap
+    timeline.sort(key=lambda x: x.get("time") or "")
     timeline = timeline[-500:]
 
+    # ---- Device alerts (persisted to alerts/ prefix) ----
     alerts = []
     for obj in list_prefix(client, f"{ALERTS_PREFIX}{site_name}/{hostname}/"):
         try:
@@ -306,7 +381,7 @@ def fetch_device_detail(site_name: str, hostname: str) -> dict:
                 client.get_object(Bucket=ORACLE_BUCKET, Key=obj["Key"])["Body"].read()))
         except Exception:
             continue
-    alerts.sort(key=lambda x: str(x.get("created_at") or ""), reverse=True)
+    alerts.sort(key=lambda x: x.get("created_at") or "", reverse=True)
 
     return {
         "device":   device,
@@ -334,7 +409,7 @@ def fetch_all_alerts() -> list:
             alerts.append(json.loads(client.get_object(Bucket=ORACLE_BUCKET, Key=obj["Key"])["Body"].read()))
         except Exception:
             continue
-    alerts.sort(key=lambda x: str(x.get("created_at") or ""), reverse=True)
+    alerts.sort(key=lambda x: x.get("created_at") or "", reverse=True)
     _cache_set("alerts", alerts)
     return alerts
 
@@ -423,12 +498,18 @@ async def get_timeline(site_name: str, hostname: str, pid: Optional[int] = None)
 async def get_all_alerts(status: Optional[str] = None, site: Optional[str] = None,
                           hostname: Optional[str] = None, severity: Optional[str] = None):
     alerts = fetch_all_alerts()
-    write_client = s3(commander=True)
-    read_client  = s3(commander=False)
+    # Pull live detections from the status feed and auto-persist any that
+    # aren't already in the persistent alerts/ prefix. We use the COMMANDER
+    # client here because the read-only client cannot write — using the
+    # read-only client was the bug that caused alerts to appear in-memory
+    # but never get saved to Oracle.
+    write_client = s3(commander=True)    # write capable
+    read_client  = s3(commander=False)   # read capable (for status feed)
     existing_ids = {a["id"] for a in alerts}
 
     for m in fetch_status():
         for raw_alert in m.get("alerts", []):
+            # Build a stable ID from source + hostname + timestamp
             src  = raw_alert.get("source", "unknown")
             ts   = (raw_alert.get("detected_at") or raw_alert.get("time") or "")
             aid  = raw_alert.get("id") or f"auto-{src}-{m['site_name']}-{m['hostname']}-{ts.replace(':', '-')}"
@@ -451,12 +532,15 @@ async def get_all_alerts(status: Optional[str] = None, site: Optional[str] = Non
                 "updated_at":  datetime.datetime.utcnow().isoformat(timespec="milliseconds"),
                 "notes":       "",
             }
+            # Persist with the write-capable commander client
             if write_client:
                 _persist_alert(write_client, new_alert)
             alerts.append(new_alert)
             existing_ids.add(aid)
+            # Invalidate the alerts cache so the next call sees the new entry
             _CACHE.pop("alerts", None)
 
+    # Apply filters
     if status:
         alerts = [a for a in alerts if a.get("status") == status]
     if site:
@@ -490,23 +574,94 @@ async def update_alert(alert_id: str, request: Request, x_admin_key: Optional[st
     raise HTTPException(404, f"Alert {alert_id} not found")
 
 
-@app.post("/api/alerts/{alert_id}/resolve")
-async def resolve_alert(alert_id: str, request: Request, x_admin_key: Optional[str] = Header(None)):
-    require_admin(x_admin_key)
-    client = s3(commander=True)
+@app.get("/api/alerts/{alert_id}/context")
+async def get_alert_context(alert_id: str, site_name: Optional[str] = None,
+                             hostname: Optional[str] = None,
+                             window_minutes: int = 10):
+    """
+    Returns full context for an alert detail modal:
+      - The alert record itself
+      - Timeline events within +/- window_minutes of the detection time
+      - Any other alerts from the same machine in the same window
+      - Matched playbook rule details (if source is playbook or playbook_via_defender)
+
+    The alert_id may be a persisted ID (from the alerts/ Oracle prefix) or
+    an auto-generated in-memory ID. We search both sources.
+    """
+    client = s3()
     if not client:
-        raise HTTPException(503, "Commander not configured")
-        
-    for obj in list_prefix(client, ALERTS_PREFIX):
-        if obj["Key"].endswith(f"/{alert_id}.json"):
-            alert = json.loads(client.get_object(Bucket=ORACLE_BUCKET, Key=obj["Key"])["Body"].read())
-            alert["status"] = "Closed"
-            alert["updated_at"] = datetime.datetime.utcnow().isoformat()
-            s3_put(client, obj["Key"], alert)
-            _CACHE.pop("alerts", None)
-            return JSONResponse({"status": "resolved", "alert_id": alert_id})
-            
-    raise HTTPException(404, f"Alert {alert_id} not found")
+        raise HTTPException(503, "Oracle not configured")
+
+    # 1. Find the alert — check persisted store first, then live status feed
+    alert = None
+    if site_name and hostname:
+        key = f"{ALERTS_PREFIX}{site_name}/{hostname}/{alert_id}.json"
+        alert = s3_get(client, key)
+
+    if alert is None:
+        # Search all machines in the live status feed
+        for m in fetch_status():
+            for a in m.get("alerts", []):
+                if a.get("id") == alert_id:
+                    alert = a
+                    site_name = site_name or m["site_name"]
+                    hostname  = hostname  or m["hostname"]
+                    break
+            if alert:
+                break
+
+    if alert is None:
+        raise HTTPException(404, f"Alert {alert_id} not found")
+
+    detected_ts = alert.get("detected_at") or alert.get("time") or ""
+    dt_alert    = _parse_utc(detected_ts)
+    window_ms   = window_minutes * 60 * 1000
+
+    # 2. Related timeline events within the time window
+    related_events = []
+    if site_name and hostname and dt_alert:
+        detail = fetch_device_detail(site_name, hostname)
+        for evt in detail.get("timeline", []):
+            dt_evt = _parse_utc(evt.get("time") or "")
+            if dt_evt:
+                diff_ms = abs((dt_evt - dt_alert).total_seconds() * 1000)
+                if diff_ms <= window_ms:
+                    related_events.append({**evt, "_delta_secs": round((dt_evt - dt_alert).total_seconds(), 1)})
+        related_events.sort(key=lambda x: x.get("time") or "")
+
+    # 3. Other alerts from the same machine in the same window
+    sibling_alerts = []
+    if site_name and hostname and dt_alert:
+        for m in fetch_status():
+            if m["site_name"] == site_name and m["hostname"] == hostname:
+                for a in m.get("alerts", []):
+                    if a.get("id") == alert_id:
+                        continue
+                    dt_a = _parse_utc(a.get("detected_at") or a.get("time") or "")
+                    if dt_a:
+                        diff_s = abs((dt_a - dt_alert).total_seconds())
+                        if diff_s <= window_minutes * 60:
+                            sibling_alerts.append(a)
+
+    # 4. Playbook rule detail if this is a rule-triggered alert
+    rule_detail = None
+    rule_name   = alert.get("rule_name") or ""
+    if rule_name:
+        client2 = s3()
+        if client2:
+            global_rules = s3_get(client2, "rules/global/rules.json") or {}
+            for r in global_rules.get("rules", []):
+                if r.get("name") == rule_name or r.get("id") == rule_name:
+                    rule_detail = r
+                    break
+
+    return JSONResponse({
+        "alert":          alert,
+        "related_events": related_events,
+        "sibling_alerts": sibling_alerts,
+        "rule_detail":    rule_detail,
+        "window_minutes": window_minutes,
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -527,6 +682,7 @@ async def set_global_enforcement(request: Request, x_admin_key: Optional[str] = 
     if not client:
         raise HTTPException(503, "Commander not configured")
     s3_put(client, f"{ENFORCE_PREFIX}global/policy.json", policy)
+    # Queue command for all known machines
     for device in fetch_inventory():
         _queue_enforcement_command(client, device["site_name"], device["hostname"], policy)
     return JSONResponse({"status": "ok", "scope": "global"})
@@ -563,6 +719,9 @@ async def set_machine_enforcement(site_name: str, hostname: str, request: Reques
 
 
 def _queue_enforcement_command(client, site_name, hostname, policy):
+    """Queue a full apply_policy command so the machine receives all policy
+    flags (DNS, USB blocking, auto-containment, exemptions), not just the
+    enforce toggle. The command_executor.py handle_apply_policy() applies them."""
     key = f"commands/{site_name}/{hostname}/pending.json"
     payload = {
         "command":    "apply_policy",
@@ -590,7 +749,11 @@ async def issue_command(request: Request, x_admin_key: Optional[str] = Header(No
         raise HTTPException(400, f"Command not in allowed list: {sorted(ALLOWED_COMMANDS)}")
     client = s3(commander=True)
     if not client:
-        raise HTTPException(503, "Commander credentials not configured on this server")
+        raise HTTPException(503, "Commander credentials not configured on this server — "
+                                  "set ORACLE_COMMANDER_ACCESS_KEY, ORACLE_COMMANDER_SECRET_KEY, "
+                                  "and DASHBOARD_ADMIN_KEY as environment variables on Render.")
+    # Clear any stale previous result before queuing so the admin always
+    # sees the result of THIS command, not a leftover from a prior one.
     try:
         client.delete_object(Bucket=ORACLE_BUCKET,
                               Key=f"commands/{site_name}/{hostname}/last_result.json")
@@ -603,12 +766,14 @@ async def issue_command(request: Request, x_admin_key: Optional[str] = Header(No
 
 @app.get("/api/command_result/{site_name}/{hostname}")
 async def get_command_result(site_name: str, hostname: str):
+    """Poll this after issuing a command to get the execution result from
+    the endpoint (written by command_executor.py within ~5 minutes)."""
     client = s3()
     if not client:
         raise HTTPException(503, "Oracle not configured")
     result = s3_get(client, f"commands/{site_name}/{hostname}/last_result.json")
     if result is None:
-        return JSONResponse({"status": "pending", "message": "No result yet."})
+        return JSONResponse({"status": "pending", "message": "No result yet — command may still be executing."})
     return JSONResponse(result)
 
 
@@ -644,6 +809,7 @@ def _save_rules(client, rules: list, scope: str, site: str = None, hostname: str
 
 
 def _merge_rules_for_machine(client, site: str, hostname: str) -> list:
+    """Global + site + machine rules merged. Machine overrides site overrides global."""
     global_rules = {r["id"]: r for r in _load_rules(client, "global")}
     site_rules   = {r["id"]: r for r in _load_rules(client, "site",    site)}
     mach_rules   = {r["id"]: r for r in _load_rules(client, "machine", site, hostname)}
@@ -652,6 +818,7 @@ def _merge_rules_for_machine(client, site: str, hostname: str) -> list:
 
 
 def _push_rules_to_machine(client, site: str, hostname: str):
+    """Write merged rules as a pending update_rules command for the endpoint."""
     merged = _merge_rules_for_machine(client, site, hostname)
     key = f"commands/{site}/{hostname}/pending.json"
     s3_put(client, key, {
@@ -677,6 +844,7 @@ async def create_rule(request: Request, x_admin_key: Optional[str] = Header(None
                        hostname: Optional[str] = None):
     require_admin(x_admin_key)
     body = await request.json()
+    # Validate actions
     actions = body.get("actions", [])
     bad = [a for a in actions if a not in ALLOWED_ACTIONS]
     if bad:
@@ -765,6 +933,7 @@ async def delete_rule(rule_id: str,
 
 def _push_rules_to_affected_machines(client, scope: str,
                                       site: Optional[str], hostname: Optional[str]):
+    """After any rule change, push merged ruleset to all affected endpoints."""
     devices = fetch_inventory()
     for d in devices:
         if scope == "global":
@@ -783,18 +952,14 @@ async def alert_webhook(request: Request, background_tasks: BackgroundTasks):
     return JSONResponse({"status": "success"})
 
 
-# Helper function to prevent timezone mismatch exceptions during metric evaluations
-def _safe_parse_iso(date_str: str) -> Optional[datetime.datetime]:
-    if not date_str:
-        return None
-    try:
-        return datetime.datetime.fromisoformat(str(date_str).replace("Z", "+00:00"))
-    except ValueError:
-        return None
-
-
 @app.get("/api/overview")
 async def get_overview():
+    """
+    Aggregate stats for the Overview landing page:
+    - Device online/offline counts and offline-for-N-days breakdown
+    - Alert counts by status
+    - SOC performance: MTTD and MTTR derived from alert timestamps
+    """
     settings    = _get_settings()
     offline_threshold_hours = settings.get("offline_threshold_hours", 1)
     offline_days_warning    = settings.get("offline_days_warning", 7)
@@ -804,9 +969,10 @@ async def get_overview():
     machines = fetch_status()
     now      = datetime.datetime.utcnow()
 
+    # Device counts
     online   = []
     offline  = []
-    long_offline = []
+    long_offline = []  # offline for more than offline_days_warning days
 
     for d in devices:
         last_seen_str = d.get("last_seen")
@@ -825,11 +991,16 @@ async def get_overview():
         else:
             offline.append(d)
 
+    # Alert counts by status
     status_counts = {"New": 0, "Open": 0, "Closed": 0}
     for a in alerts:
         st = a.get("status", "New")
         status_counts[st] = status_counts.get(st, 0) + 1
 
+    # SOC performance — MTTD and MTTR
+    # MTTD: time from detected_at to when status first changed to Open (created→opened)
+    # MTTR: time from detected_at to when status changed to Closed (created→resolved)
+    # We derive these from alert timestamps stored in Oracle.
     mttd_samples = []
     mttr_samples = []
 
@@ -837,34 +1008,34 @@ async def get_overview():
         detected = a.get("detected_at") or a.get("created_at") or a.get("time")
         updated  = a.get("updated_at")
         status   = a.get("status", "New")
-        
-        # Robust parsing utilizing the _safe_parse_iso helper
-        dt_detected = _safe_parse_iso(detected)
-        dt_updated  = _safe_parse_iso(updated)
-        
+        if not detected or not updated:
+            continue
+        # _parse_utc normalises ALL timestamps to naive UTC before subtraction.
+        # Without this, Defender's "+01:00" timestamps vs our naive UTC
+        # updated_at raised TypeError, caught silently, giving permanent N/A.
+        dt_detected = _parse_utc(detected)
+        dt_updated  = _parse_utc(updated)
         if not dt_detected or not dt_updated:
             continue
-            
-        try:
-            delta_mins  = (dt_updated - dt_detected).total_seconds() / 60
-            if delta_mins < 0:
-                continue
-            if status in ("Open", "Closed"):
-                mttd_samples.append(delta_mins) 
-            if status == "Closed":
-                mttr_samples.append(delta_mins) 
-        except Exception:
+        delta_mins = (dt_updated - dt_detected).total_seconds() / 60
+        if delta_mins < 0:
             continue
+        if status in ("Open", "Closed"):
+            mttd_samples.append(delta_mins)
+        if status == "Closed":
+            mttr_samples.append(delta_mins)
 
     def _avg(samples):
         return round(sum(samples) / len(samples), 1) if samples else None
 
+    # Recent alerts for the overview feed (last 10)
     recent_alerts = sorted(
         [a for a in alerts if a.get("status") != "Closed"],
-        key=lambda x: str(x.get("detected_at") or x.get("time") or ""),
+        key=lambda x: x.get("detected_at") or x.get("time") or "",
         reverse=True
     )[:10]
 
+    # Playbook alert counts from status feed
     playbook_alert_count = sum(
         len([a for a in m.get("alerts", []) if a.get("source") == "playbook"])
         for m in machines
@@ -913,9 +1084,10 @@ async def get_settings():
 async def update_settings(request: Request, x_admin_key: Optional[str] = Header(None)):
     require_admin(x_admin_key)
     body = await request.json()
+    # Validate known settings
     allowed_keys = {
-        "offline_threshold_hours",
-        "offline_days_warning",
+        "offline_threshold_hours",  # hours before a device is considered offline (default: 1)
+        "offline_days_warning",     # days offline before flagged in overview (default: 7)
         "dashboard_title",
         "org_name",
     }
