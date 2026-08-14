@@ -2,1758 +2,881 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>SME Security Dashboard</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SME Security Platform</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <style>
-:root{--bg:#0d1117;--surface:#161b22;--surface2:#21262d;--border:#30363d;--text:#e6edf3;--muted:#8b949e;--green:#3fb950;--red:#f85149;--amber:#d29922;--blue:#58a6ff;--purple:#bc8cff;--accent:#1f6feb;}
-*{box-sizing:border-box;margin:0;padding:0;}
-body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--text);min-height:100vh;}
-/* Topbar */
-.topbar{background:var(--surface);border-bottom:1px solid var(--border);padding:0 24px;display:flex;align-items:center;gap:32px;height:56px;position:sticky;top:0;z-index:100;}
-.topbar h1{font-size:15px;font-weight:600;white-space:nowrap;}
-.nav{display:flex;gap:2px;}
-.nav-btn{background:none;border:none;color:var(--muted);padding:6px 14px;border-radius:6px;cursor:pointer;font-size:13px;transition:all .15s;}
-.nav-btn:hover{background:var(--surface2);color:var(--text);}
-.nav-btn.active{background:var(--accent);color:#fff;}
-.topbar-right{margin-left:auto;display:flex;align-items:center;gap:10px;}
-.status-dot{width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 6px var(--green);}
-.subtitle{font-size:12px;color:var(--muted);}
-/* Main */
-.main{padding:24px;max-width:1400px;margin:0 auto;}
-.panel{display:none;}
-.panel.active{display:block;}
-/* Cards */
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px;}
-.card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:16px;}
-.card-header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px;}
-.hostname{font-weight:600;font-size:15px;}
-.site-tag{background:var(--surface2);color:var(--muted);font-size:11px;padding:2px 8px;border-radius:10px;}
-.modules{display:flex;flex-direction:column;gap:6px;margin-bottom:12px;}
-.mod-row{display:flex;justify-content:space-between;align-items:center;font-size:12px;padding:5px 8px;border-radius:6px;background:rgba(255,255,255,.02);}
-.dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:6px;flex-shrink:0;}
-.dot.green{background:var(--green);box-shadow:0 0 5px var(--green);}
-.dot.red{background:var(--red);box-shadow:0 0 5px var(--red);}
-.dot.amber{background:var(--amber);box-shadow:0 0 5px var(--amber);}
-.mod-left{display:flex;align-items:center;}
-.ts{color:var(--muted);font-size:10px;}
-/* Buttons */
-.btn-row{display:flex;gap:6px;flex-wrap:wrap;border-top:1px solid var(--border);padding-top:10px;margin-top:4px;}
-.btn{font-size:11px;padding:4px 10px;border-radius:6px;cursor:pointer;border:1px solid;transition:all .15s;font-family:inherit;}
-.btn:disabled{opacity:.4;cursor:not-allowed;}
-.btn-primary{background:rgba(31,111,235,.15);border-color:var(--accent);color:var(--blue);}
-.btn-primary:hover:not(:disabled){background:rgba(31,111,235,.3);}
-.btn-danger{background:rgba(248,81,73,.1);border-color:#f85149;color:var(--red);}
-.btn-danger:hover:not(:disabled){background:rgba(248,81,73,.25);}
-.btn-ghost{background:transparent;border-color:var(--border);color:var(--muted);}
-.btn-ghost:hover:not(:disabled){background:var(--surface2);color:var(--text);}
-.btn-success{background:rgba(63,185,80,.12);border-color:var(--green);color:var(--green);}
-.btn-success:hover:not(:disabled){background:rgba(63,185,80,.25);}
-.cmd-status{font-size:11px;color:var(--muted);margin-top:6px;min-height:14px;}
-/* Table */
-table{width:100%;border-collapse:collapse;font-size:13px;}
-th{text-align:left;padding:8px 12px;border-bottom:2px solid var(--border);color:var(--muted);font-weight:500;font-size:12px;white-space:nowrap;}
-td{padding:8px 12px;border-bottom:1px solid rgba(48,54,61,.6);vertical-align:middle;}
-tr:hover td{background:rgba(255,255,255,.02);}
-tr.clickable{cursor:pointer;}
-/* Badges */
-.badge{padding:2px 8px;border-radius:10px;font-size:11px;font-weight:500;}
-.badge-green{background:rgba(63,185,80,.15);color:var(--green);}
-.badge-red{background:rgba(248,81,73,.12);color:var(--red);}
-.badge-amber{background:rgba(210,153,34,.15);color:var(--amber);}
-.badge-blue{background:rgba(88,166,255,.12);color:var(--blue);}
-.badge-muted{background:var(--surface2);color:var(--muted);}
-/* Filters bar */
-.filter-bar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;align-items:center;}
-.filter-bar input,.filter-bar select{background:var(--surface);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:6px;font-size:12px;font-family:inherit;}
-.filter-bar input::placeholder{color:var(--muted);}
-/* Alert row */
-.alert-card{background:var(--surface);border:1px solid var(--border);border-left:3px solid var(--red);border-radius:0 8px 8px 0;padding:12px 16px;margin-bottom:8px;cursor:pointer;transition:background .15s;}
-.alert-card:hover{background:var(--surface2);}
-.alert-title{font-weight:600;font-size:14px;margin-bottom:4px;}
-.alert-meta{display:flex;gap:12px;font-size:12px;color:var(--muted);flex-wrap:wrap;}
-.alert-card.severity-critical{border-left-color:#f85149;}
-.alert-card.severity-high{border-left-color:#d29922;}
-.alert-card.severity-medium{border-left-color:var(--blue);}
-.alert-card.severity-low{border-left-color:var(--muted);}
-/* Modal */
-.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:200;display:flex;align-items:flex-start;justify-content:center;padding:40px 16px;overflow-y:auto;}
-.modal{background:var(--surface);border:1px solid var(--border);border-radius:12px;width:100%;max-width:900px;}
-.modal-header{display:flex;justify-content:space-between;align-items:center;padding:16px 20px;border-bottom:1px solid var(--border);}
-.modal-title{font-weight:600;font-size:16px;}
-.modal-close{background:none;border:none;color:var(--muted);font-size:20px;cursor:pointer;line-height:1;}
-.modal-body{padding:20px;}
-/* Device detail sub-tabs */
-.sub-tabs{display:flex;gap:2px;border-bottom:1px solid var(--border);margin-bottom:20px;}
-.sub-tab{background:none;border:none;color:var(--muted);padding:8px 16px;cursor:pointer;font-size:13px;border-bottom:2px solid transparent;margin-bottom:-1px;}
-.sub-tab.active{color:var(--blue);border-bottom-color:var(--blue);}
-.sub-panel{display:none;}
-.sub-panel.active{display:block;}
-/* Device props */
-.prop-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
-.prop{background:var(--surface2);border-radius:8px;padding:12px;}
-.prop-label{font-size:11px;color:var(--muted);margin-bottom:4px;}
-.prop-value{font-size:14px;font-weight:500;}
-/* Timeline */
-.timeline-item{display:flex;gap:12px;padding:8px 0;border-bottom:1px solid rgba(48,54,61,.4);}
-.timeline-dot{width:8px;height:8px;border-radius:50%;background:var(--muted);flex-shrink:0;margin-top:5px;}
-.timeline-dot.threat{background:var(--red);}
-.timeline-dot.usb{background:var(--amber);}
-.timeline-dot.process_monitor{background:var(--blue);}
-.timeline-content{flex:1;min-width:0;}
-.timeline-time{font-size:11px;color:var(--muted);}
-.timeline-event{font-size:13px;margin-bottom:2px;}
-.timeline-detail{font-size:11px;color:var(--muted);font-family:monospace;word-break:break-all;}
-/* Enforcement */
-.scope-tabs{display:flex;gap:6px;margin-bottom:20px;}
-.scope-tab{background:var(--surface2);border:1px solid var(--border);color:var(--muted);padding:6px 16px;border-radius:6px;cursor:pointer;font-size:13px;}
-.scope-tab.active{background:var(--accent);border-color:var(--accent);color:#fff;}
-.policy-form{background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:16px;}
-.policy-form h3{font-size:14px;margin-bottom:12px;color:var(--text);}
-.form-row{display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid rgba(48,54,61,.4);}
-.form-row:last-child{border-bottom:none;}
-.form-label{font-size:13px;}
-.form-desc{font-size:11px;color:var(--muted);margin-top:2px;}
-.toggle{position:relative;width:36px;height:20px;flex-shrink:0;}
-.toggle input{opacity:0;width:0;height:0;}
-.toggle-slider{position:absolute;inset:0;background:var(--border);border-radius:20px;cursor:pointer;transition:.3s;}
-.toggle-slider:before{position:absolute;content:"";height:14px;width:14px;left:3px;bottom:3px;background:#fff;border-radius:50%;transition:.3s;}
-.toggle input:checked + .toggle-slider{background:var(--green);}
-.toggle input:checked + .toggle-slider:before{transform:translateX(16px);}
-.exemption-list{margin-top:8px;}
-.exemption-item{display:flex;justify-content:space-between;align-items:center;background:var(--surface);padding:6px 10px;border-radius:6px;margin-bottom:4px;font-size:12px;}
-.exemption-remove{background:none;border:none;color:var(--red);cursor:pointer;font-size:16px;line-height:1;}
-.add-exemption{display:flex;gap:6px;margin-top:8px;}
-.add-exemption input{flex:1;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:5px 8px;border-radius:6px;font-size:12px;}
-/* Empty state */
-.empty{text-align:center;padding:48px;color:var(--muted);}
-.empty svg{opacity:.3;margin-bottom:12px;}
-/* Scrollable */
-.scroll-table{overflow-x:auto;}
 
-/* Overview */
-.stat-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:16px;margin-bottom:24px;}
-.stat-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:20px;cursor:pointer;transition:all .15s;position:relative;overflow:hidden;}
-.stat-card:hover{border-color:var(--accent);transform:translateY(-1px);}
-.stat-card::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;}
-.stat-card.green::before{background:var(--green);}
-.stat-card.red::before{background:var(--red);}
-.stat-card.amber::before{background:var(--amber);}
-.stat-card.blue::before{background:var(--blue);}
-.stat-card.purple::before{background:var(--purple);}
-.stat-num{font-size:36px;font-weight:700;line-height:1;margin-bottom:4px;}
-.stat-label{font-size:12px;color:var(--muted);margin-bottom:8px;}
-.stat-sub{font-size:11px;color:var(--muted);}
-.stat-trend{font-size:11px;margin-top:6px;}
-.overview-section{margin-bottom:28px;}
-.overview-section h2{font-size:15px;font-weight:600;margin-bottom:4px;}
-.overview-section .section-sub{font-size:12px;color:var(--muted);margin-bottom:14px;}
-.perf-bar{background:var(--surface2);border-radius:8px;height:8px;margin-top:6px;overflow:hidden;}
-.perf-bar-fill{height:100%;border-radius:8px;transition:width .6s ease;}
-.recent-alert-row{display:flex;align-items:center;gap:10px;padding:8px 12px;background:var(--surface2);border-radius:8px;margin-bottom:6px;cursor:pointer;transition:background .15s;}
-.recent-alert-row:hover{background:rgba(255,255,255,.05);}
-.recent-alert-info{flex:1;min-width:0;}
-.recent-alert-name{font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-.recent-alert-meta{font-size:11px;color:var(--muted);}
-.intro-banner{background:linear-gradient(135deg,rgba(31,111,235,.15) 0%,rgba(88,166,255,.08) 100%);border:1px solid rgba(31,111,235,.3);border-radius:12px;padding:20px 24px;margin-bottom:24px;display:flex;justify-content:space-between;align-items:center;gap:16px;}
-.intro-text h1{font-size:20px;font-weight:700;margin-bottom:4px;}
-.intro-text p{font-size:13px;color:var(--muted);max-width:500px;}
-.intro-actions{display:flex;gap:8px;flex-shrink:0;}
-.offline-warning{background:rgba(210,153,34,.1);border:1px solid rgba(210,153,34,.3);border-radius:8px;padding:12px 16px;font-size:13px;}
-.offline-device-row{display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid rgba(48,54,61,.4);}
-.offline-device-row:last-child{border-bottom:none;}
+:root{
+  --bg:#080c14;--surface:#0e1420;--surface2:#141c2e;--surface3:#1a2438;
+  --border:#1e2d47;--border2:#253552;
+  --text:#e2e8f0;--muted:#64748b;--muted2:#94a3b8;
+  --blue:#3b82f6;--blue-dim:#1e3a6e;
+  --green:#10b981;--green-dim:#064e3b;
+  --red:#ef4444;--red-dim:#450a0a;
+  --amber:#f59e0b;--amber-dim:#451a03;
+  --purple:#a855f7;--purple-dim:#2e1065;
+  --cyan:#06b6d4;--sidebar-w:220px;--radius:10px;--shadow:0 4px 24px rgba(0,0,0,.4);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;background:var(--bg);color:var(--text);min-height:100vh;display:flex;overflow:hidden;}
+.sidebar{width:var(--sidebar-w);background:var(--surface);border-right:1px solid var(--border);display:flex;flex-direction:column;height:100vh;position:fixed;left:0;top:0;z-index:50;}
+.sidebar-brand{padding:20px 16px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;}
+.brand-icon{width:32px;height:32px;background:linear-gradient(135deg,#3b82f6,#8b5cf6);border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0;}
+.brand-text{font-weight:700;font-size:14px;line-height:1.2;}
+.brand-sub{font-size:10px;color:var(--muted);}
+.sidebar-nav{flex:1;overflow-y:auto;padding:12px 8px;}
+.nav-section-label{font-size:10px;color:var(--muted);font-weight:600;letter-spacing:.08em;text-transform:uppercase;padding:8px 8px 4px;}
+.nav-item{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:8px;cursor:pointer;transition:all .15s;color:var(--muted2);font-size:13px;user-select:none;border:none;background:none;width:100%;text-align:left;}
+.nav-item:hover{background:var(--surface2);color:var(--text);}
+.nav-item.active{background:var(--blue-dim);color:var(--blue);font-weight:500;}
+.nav-item .icon{font-size:16px;width:20px;text-align:center;flex-shrink:0;}
+.nav-badge{margin-left:auto;background:var(--red);color:#fff;font-size:10px;padding:1px 6px;border-radius:10px;font-weight:600;}
+.sidebar-footer{padding:12px 8px;border-top:1px solid var(--border);}
+.user-pill{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:8px;background:var(--surface2);}
+.user-avatar{width:28px;height:28px;border-radius:50%;background:linear-gradient(135deg,#3b82f6,#8b5cf6);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;flex-shrink:0;}
+.user-info{flex:1;min-width:0;}
+.user-name{font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.user-role{font-size:10px;color:var(--muted);text-transform:capitalize;}
+.main{margin-left:var(--sidebar-w);flex:1;overflow-y:auto;height:100vh;}
+.topbar{height:52px;background:var(--surface);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 20px;gap:12px;position:sticky;top:0;z-index:40;}
+.page-title{font-size:15px;font-weight:600;flex:1;}
+.conn-dot{width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 6px var(--green);}
+.conn-dot.off{background:var(--red);box-shadow:0 0 6px var(--red);}
+.content{padding:20px;}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:16px;}
+.card-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;}
+.card-title{font-size:13px;font-weight:600;color:var(--muted2);}
+.stat-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(175px,1fr));gap:12px;margin-bottom:20px;}
+.stat-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:16px 18px;cursor:pointer;transition:all .2s;position:relative;overflow:hidden;}
+.stat-card::after{content:'';position:absolute;top:0;left:0;right:0;height:2px;}
+.stat-card.blue::after{background:linear-gradient(90deg,var(--blue),var(--cyan));}
+.stat-card.green::after{background:linear-gradient(90deg,var(--green),#34d399);}
+.stat-card.red::after{background:linear-gradient(90deg,var(--red),#f97316);}
+.stat-card.amber::after{background:linear-gradient(90deg,var(--amber),#fcd34d);}
+.stat-card.purple::after{background:linear-gradient(90deg,var(--purple),#ec4899);}
+.stat-card:hover{border-color:var(--border2);transform:translateY(-1px);box-shadow:var(--shadow);}
+.stat-num{font-size:32px;font-weight:800;line-height:1;margin-bottom:4px;letter-spacing:-1px;}
+.stat-label{font-size:11px;color:var(--muted);font-weight:500;text-transform:uppercase;letter-spacing:.06em;}
+.stat-sub{font-size:11px;color:var(--muted);margin-top:6px;}
+.table-wrap{overflow-x:auto;}
+table{width:100%;border-collapse:collapse;font-size:12px;}
+th{text-align:left;padding:8px 12px;color:var(--muted);font-weight:500;font-size:11px;text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid var(--border);white-space:nowrap;}
+td{padding:8px 12px;border-bottom:1px solid rgba(30,45,71,.5);vertical-align:middle;}
+tr:hover td{background:rgba(255,255,255,.015);}
+tr.cr{cursor:pointer;}
+.badge{padding:2px 8px;border-radius:6px;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;display:inline-block;}
+.b-red{background:rgba(239,68,68,.12);color:#f87171;border:1px solid rgba(239,68,68,.25);}
+.b-amber{background:rgba(245,158,11,.12);color:#fbbf24;border:1px solid rgba(245,158,11,.25);}
+.b-green{background:rgba(16,185,129,.12);color:#34d399;border:1px solid rgba(16,185,129,.25);}
+.b-blue{background:rgba(59,130,246,.12);color:#60a5fa;border:1px solid rgba(59,130,246,.25);}
+.b-purple{background:rgba(168,85,247,.12);color:#c084fc;border:1px solid rgba(168,85,247,.25);}
+.b-muted{background:rgba(100,116,139,.12);color:var(--muted2);border:1px solid rgba(100,116,139,.25);}
+.btn{font-size:12px;padding:6px 12px;border-radius:7px;cursor:pointer;border:1px solid;transition:all .15s;font-family:inherit;font-weight:500;display:inline-flex;align-items:center;gap:5px;}
+.btn:disabled{opacity:.4;cursor:not-allowed;}
+.btn-p{background:var(--blue);border-color:var(--blue);color:#fff;}
+.btn-p:hover:not(:disabled){background:#2563eb;}
+.btn-d{background:rgba(239,68,68,.1);border-color:var(--red);color:var(--red);}
+.btn-d:hover:not(:disabled){background:rgba(239,68,68,.25);}
+.btn-g{background:transparent;border-color:var(--border2);color:var(--muted2);}
+.btn-g:hover:not(:disabled){background:var(--surface2);color:var(--text);}
+.btn-s{background:rgba(16,185,129,.1);border-color:var(--green);color:var(--green);}
+.btn-s:hover:not(:disabled){background:rgba(16,185,129,.25);}
+.btn-pu{background:rgba(168,85,247,.1);border-color:var(--purple);color:var(--purple);}
+.btn-row{display:flex;gap:6px;flex-wrap:wrap;}
+.filter-bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:14px;}
+.fi,.fs{background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:7px;font-size:12px;font-family:inherit;outline:none;}
+.fi:focus,.fs:focus{border-color:var(--blue);}
+.fi::placeholder{color:var(--muted);}
+.bulk-bar{background:var(--blue-dim);border:1px solid var(--blue);border-radius:8px;padding:8px 14px;display:flex;align-items:center;gap:10px;margin-bottom:12px;font-size:12px;}
+.perf-bar{background:var(--surface2);height:5px;border-radius:3px;overflow:hidden;margin-top:6px;}
+.perf-fill{height:100%;border-radius:3px;transition:width .6s ease,background .3s;}
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.65);backdrop-filter:blur(4px);z-index:200;display:flex;align-items:flex-start;justify-content:center;padding:40px 16px;overflow-y:auto;}
+.modal{background:var(--surface);border:1px solid var(--border);border-radius:14px;width:100%;box-shadow:var(--shadow);}
+.modal-hdr{display:flex;justify-content:space-between;align-items:center;padding:16px 20px;border-bottom:1px solid var(--border);}
+.modal-title{font-weight:700;font-size:15px;}
+.modal-x{background:none;border:none;color:var(--muted);font-size:22px;cursor:pointer;line-height:1;padding:2px 6px;border-radius:5px;}
+.modal-x:hover{background:var(--surface2);color:var(--text);}
+.modal-body{padding:20px;}
+.modal-foot{padding:14px 20px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:8px;}
+.stabs{display:flex;gap:2px;border-bottom:1px solid var(--border);margin-bottom:16px;}
+.stab{background:none;border:none;color:var(--muted);padding:8px 14px;cursor:pointer;font-size:12px;border-bottom:2px solid transparent;margin-bottom:-1px;transition:all .15s;font-family:inherit;}
+.stab:hover{color:var(--text);}
+.stab.active{color:var(--blue);border-bottom-color:var(--blue);font-weight:500;}
+.spanel{display:none;}
+.spanel.active{display:block;}
+.fg{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+.ff{display:flex;flex-direction:column;gap:5px;}
+.ff.full{grid-column:1/-1;}
+.fl{font-size:11px;color:var(--muted);font-weight:500;text-transform:uppercase;letter-spacing:.06em;}
+.fip{background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:8px 10px;border-radius:7px;font-size:13px;font-family:inherit;outline:none;width:100%;}
+.fip:focus{border-color:var(--blue);}
+.fip::placeholder{color:var(--muted);}
+.fsel{background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:8px 10px;border-radius:7px;font-size:13px;font-family:inherit;outline:none;width:100%;}
+.fsel:focus{border-color:var(--blue);}
+.ai-panel{background:linear-gradient(135deg,rgba(59,130,246,.05),rgba(168,85,247,.05));border:1px solid rgba(168,85,247,.2);border-radius:10px;padding:14px;margin-top:14px;}
+.login-screen{position:fixed;inset:0;background:var(--bg);display:flex;align-items:center;justify-content:center;z-index:999;}
+.login-card{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:36px 32px;width:360px;box-shadow:0 24px 64px rgba(0,0,0,.5);}
+.login-brand{text-align:center;margin-bottom:28px;}
+.login-icon{width:56px;height:56px;background:linear-gradient(135deg,#3b82f6,#8b5cf6);border-radius:14px;margin:0 auto 12px;display:flex;align-items:center;justify-content:center;font-size:28px;}
+.lerr{background:var(--red-dim);border:1px solid rgba(239,68,68,.3);border-radius:8px;padding:8px 12px;font-size:12px;color:#f87171;margin-bottom:12px;display:none;}
+.chart-row{display:grid;grid-template-columns:2fr 1fr;gap:14px;margin-bottom:14px;}
+.chart-box{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:16px;}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+.prop{background:var(--surface2);border-radius:8px;padding:12px;}
+.pl{font-size:10px;color:var(--muted);font-weight:500;text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px;}
+.pv{font-size:13px;font-weight:500;}
+.empty{text-align:center;padding:48px;color:var(--muted);font-size:13px;}
+.scroll{max-height:350px;overflow-y:auto;}
+.sec-title{font-size:12px;font-weight:700;color:var(--muted2);margin:14px 0 8px;text-transform:uppercase;letter-spacing:.08em;display:flex;align-items:center;gap:8px;}
+.sec-title::after{content:'';flex:1;height:1px;background:var(--border);}
+.iac{display:flex;gap:5px;opacity:0;transition:opacity .15s;}
+tr:hover .iac{opacity:1;}
+.mod-dot{width:8px;height:8px;border-radius:50%;display:inline-block;}
+.md-ok{background:var(--green);}
+.md-fail{background:var(--red);}
+.md-unk{background:var(--muted);}
+.tl-item{display:flex;gap:10px;padding:7px 0;border-bottom:1px solid rgba(30,45,71,.5);}
+.tl-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0;margin-top:5px;}
+.tl-cnt{flex:1;min-width:0;}
+.tl-t{font-size:10px;color:var(--muted);}
+.tl-e{font-size:12px;margin:2px 0;}
+.tl-d{font-size:10px;color:var(--muted);font-family:monospace;word-break:break-all;}
+
 </style>
 </head>
 <body>
-<div class="topbar">
-  <h1>SME Security</h1>
-  <nav class="nav">
-    <button class="nav-btn active" data-panel="overview">Overview</button>
-    <button class="nav-btn" data-panel="status">Live Status</button>
-    <button class="nav-btn" data-panel="inventory">Inventory</button>
-    <button class="nav-btn" data-panel="alerts">Alerts</button>
-    <button class="nav-btn" data-panel="enforcement">Enforcement</button>
-    <button class="nav-btn" data-panel="rules">Detection Rules</button>
-  </nav>
-  <div class="topbar-right">
-    <span class="status-dot" id="conn-dot"></span>
-    <span class="subtitle" id="subtitle">Loading...</span>
-  </div>
-</div>
 
-<div class="main">
-
-  <!-- OVERVIEW -->
-  <div class="panel active" id="panel-overview">
-    <div class="intro-banner">
-      <div class="intro-text">
-        <h1 id="overview-org-name">SME Security Operations</h1>
-        <p>Centralized endpoint detection &amp; response — monitor, investigate, and respond to threats across all your managed endpoints from a single console.</p>
-      </div>
-      <div class="intro-actions">
-        <button class="btn btn-primary" onclick="navTo('inventory')">View Inventory</button>
-        <button class="btn btn-ghost" onclick="openSettings()">Settings</button>
-      </div>
+<div class="login-screen" id="ls">
+  <div class="login-card">
+    <div class="login-brand">
+      <div class="login-icon">&#x1F6E1;</div>
+      <div style="font-size:20px;font-weight:800;margin-bottom:4px">SME Security</div>
+      <div style="font-size:13px;color:var(--muted)">Sign in to your security console</div>
     </div>
-
-    <!-- Device stats -->
-    <div class="overview-section">
-      <h2>Endpoint Status</h2>
-      <div class="section-sub">Click any card to see the full device list.</div>
-      <div class="stat-grid" id="ov-device-stats">
-        <div class="stat-card green" onclick="navToFiltered('inventory','online')">
-          <div class="stat-num" id="ov-online">-</div>
-          <div class="stat-label">Online</div>
-          <div class="stat-sub">Reported in last hour</div>
-        </div>
-        <div class="stat-card red" onclick="navToFiltered('inventory','offline')">
-          <div class="stat-num" id="ov-offline">-</div>
-          <div class="stat-label">Offline</div>
-          <div class="stat-sub">No recent check-in</div>
-        </div>
-        <div class="stat-card amber" onclick="showLongOfflineModal()">
-          <div class="stat-num" id="ov-long-offline">-</div>
-          <div class="stat-label">Offline &gt;<span id="ov-warning-days">7</span> days</div>
-          <div class="stat-sub" id="ov-long-offline-sub">Click for device list</div>
-        </div>
-        <div class="stat-card blue">
-          <div class="stat-num" id="ov-total">-</div>
-          <div class="stat-label">Total Managed</div>
-          <div class="stat-sub" id="ov-sites-count">Across all sites</div>
-        </div>
-      </div>
-      <div id="ov-long-offline-warning" style="display:none;"></div>
-    </div>
-
-    <!-- Alert stats -->
-    <div class="overview-section">
-      <h2>Alert Summary</h2>
-      <div class="section-sub">Click any card to see filtered alerts.</div>
-      <div class="stat-grid">
-        <div class="stat-card red" onclick="navToFilteredAlerts('New')">
-          <div class="stat-num" id="ov-new-alerts">-</div>
-          <div class="stat-label">New Alerts</div>
-          <div class="stat-sub">Unacknowledged</div>
-        </div>
-        <div class="stat-card amber" onclick="navToFilteredAlerts('Open')">
-          <div class="stat-num" id="ov-open-alerts">-</div>
-          <div class="stat-label">Open Alerts</div>
-          <div class="stat-sub">Under investigation</div>
-        </div>
-        <div class="stat-card green" onclick="navToFilteredAlerts('Closed')">
-          <div class="stat-num" id="ov-closed-alerts">-</div>
-          <div class="stat-label">Closed Alerts</div>
-          <div class="stat-sub">Resolved</div>
-        </div>
-        <div class="stat-card purple" onclick="navTo('rules')">
-          <div class="stat-num" id="ov-playbook-alerts">-</div>
-          <div class="stat-label">Rule Detections</div>
-          <div class="stat-sub">From playbook rules</div>
-        </div>
-      </div>
-    </div>
-
-    <!-- SOC Performance -->
-    <div class="overview-section">
-      <h2>SOC Performance</h2>
-      <div class="section-sub">Based on <span id="ov-soc-samples">-</span> alert(s) with status transitions. Click to view all alerts.</div>
-      <div class="stat-grid" style="grid-template-columns:repeat(auto-fill,minmax(240px,1fr));">
-        <div class="stat-card blue" onclick="navTo('alerts')">
-          <div class="stat-label">Mean Time to Detect (MTTD)</div>
-          <div class="stat-num" id="ov-mttd" style="font-size:28px;">-</div>
-          <div class="stat-sub">Avg minutes from detection to acknowledgement</div>
-          <div class="perf-bar"><div class="perf-bar-fill" id="ov-mttd-bar" style="background:var(--blue);width:0%;"></div></div>
-        </div>
-        <div class="stat-card green" onclick="navTo('alerts')">
-          <div class="stat-label">Mean Time to Respond (MTTR)</div>
-          <div class="stat-num" id="ov-mttr" style="font-size:28px;">-</div>
-          <div class="stat-sub">Avg minutes from detection to resolution</div>
-          <div class="perf-bar"><div class="perf-bar-fill" id="ov-mttr-bar" style="background:var(--green);width:0%;"></div></div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Recent Alerts -->
-    <div class="overview-section">
-      <h2>Recent Unresolved Alerts</h2>
-      <div class="section-sub"><a href="#" onclick="navTo('alerts');return false;" style="color:var(--blue);text-decoration:none;">View all alerts &rarr;</a></div>
-      <div id="ov-recent-alerts"></div>
-    </div>
-  </div>
-
-  <!-- STATUS -->
-  <div class="panel" id="panel-status">
-    <div class="grid" id="status-grid"></div>
-  </div>
-
-  <!-- INVENTORY -->
-  <div class="panel" id="panel-inventory">
-    <div class="filter-bar">
-      <input id="inv-search" placeholder="Search hostname or site..." style="width:220px;">
-      <select id="inv-status-filter">
-        <option value="">All status</option>
-        <option value="online">Online</option>
-        <option value="offline">Offline</option>
-      </select>
-    </div>
-    <div class="scroll-table">
-      <table id="inv-table">
-        <thead><tr>
-          <th>Hostname</th><th>Site</th><th>OS</th>
-          <th>Agent Ver.</th><th>Modules</th><th>Last Seen</th><th>Status</th>
-        </tr></thead>
-        <tbody id="inv-body"></tbody>
-      </table>
-    </div>
-  </div>
-
-  <!-- ALERTS -->
-  <div class="panel" id="panel-alerts">
-    <div class="filter-bar">
-      <input id="alert-search" placeholder="Search threat name..." style="width:200px;">
-      <select id="alert-status-filter">
-        <option value="">All statuses</option>
-        <option value="New">New</option>
-        <option value="Open">Open</option>
-        <option value="Closed">Closed</option>
-      </select>
-      <select id="alert-severity-filter">
-        <option value="">All severities</option>
-        <option value="CRITICAL">Critical</option>
-        <option value="HIGH">High</option>
-        <option value="MEDIUM">Medium</option>
-        <option value="LOW">Low</option>
-      </select>
-      <select id="alert-site-filter"><option value="">All sites</option></select>
-      <select id="alert-group-by">
-        <option value="none">No grouping</option>
-        <option value="device">Group by device</option>
-        <option value="type">Group by threat type</option>
-      </select>
-    </div>
-    <div id="alerts-list"></div>
-  </div>
-
-  <!-- ENFORCEMENT -->
-  <div class="panel" id="panel-enforcement">
-    <div class="scope-tabs">
-      <button class="scope-tab active" data-scope="global">Global</button>
-      <button class="scope-tab" data-scope="site">By Site</button>
-      <button class="scope-tab" data-scope="machine">By Machine</button>
-    </div>
-    <div id="enforce-global" class="enforce-scope active">
-      <div class="policy-form" id="global-form"></div>
-      <button class="btn btn-primary" onclick="saveEnforcement('global')">Apply Global Policy</button>
-    </div>
-    <div id="enforce-site" class="enforce-scope" style="display:none;">
-      <div style="margin-bottom:12px;">
-        <select id="site-select" style="background:var(--surface);border:1px solid var(--border);color:var(--text);padding:6px 12px;border-radius:6px;font-size:13px;"></select>
-      </div>
-      <div class="policy-form" id="site-form"></div>
-      <button class="btn btn-primary" onclick="saveEnforcement('site')">Apply to Site</button>
-    </div>
-    <div id="enforce-machine" class="enforce-scope" style="display:none;">
-      <div style="margin-bottom:12px;display:flex;gap:8px;">
-        <select id="machine-site-select" style="background:var(--surface);border:1px solid var(--border);color:var(--text);padding:6px 12px;border-radius:6px;font-size:13px;" onchange="updateMachineList()"></select>
-        <select id="machine-select" style="background:var(--surface);border:1px solid var(--border);color:var(--text);padding:6px 12px;border-radius:6px;font-size:13px;"></select>
-      </div>
-      <div class="policy-form" id="machine-form"></div>
-      <button class="btn btn-primary" onclick="saveEnforcement('machine')">Apply to Machine</button>
+    <div class="lerr" id="lerr"></div>
+    <div style="display:flex;flex-direction:column;gap:14px">
+      <div class="ff"><div class="fl">Username</div><input id="lu" class="fip" placeholder="admin" autocomplete="username"></div>
+      <div class="ff"><div class="fl">Password</div><input id="lp" class="fip" type="password" placeholder="&#x2022;&#x2022;&#x2022;&#x2022;&#x2022;&#x2022;&#x2022;&#x2022;" autocomplete="current-password"></div>
+      <button class="btn btn-p" style="width:100%;padding:10px;font-size:14px" onclick="doLogin()">Sign In</button>
     </div>
   </div>
 </div>
 
-  <!-- RULES -->
-  <div class="panel" id="panel-rules">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
-      <div>
-        <h2 style="font-size:16px;margin-bottom:4px;">Detection Rules</h2>
-        <p style="font-size:12px;color:var(--muted);">Rules push to all affected endpoints within 5 min. Machine-level overrides site, site overrides global.</p>
-      </div>
-      <button class="btn btn-primary" onclick="openRuleEditor(null)">+ New Rule</button>
-    </div>
-    <div style="display:flex;gap:10px;align-items:center;margin-bottom:16px;flex-wrap:wrap;">
-      <div class="scope-tabs" style="margin:0;">
-        <button class="scope-tab active" data-rule-scope="global">Global</button>
-        <button class="scope-tab" data-rule-scope="site">By Site</button>
-        <button class="scope-tab" data-rule-scope="machine">By Machine</button>
-      </div>
-      <select id="rule-site-sel" style="display:none;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:6px;font-size:12px;" onchange="loadRules()"></select>
-      <select id="rule-machine-sel" style="display:none;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:6px;font-size:12px;" onchange="loadRules()"></select>
-    </div>
-    <div id="rules-list"></div>
+<nav class="sidebar" id="sidebar">
+  <div class="sidebar-brand">
+    <div class="brand-icon">&#x1F6E1;</div>
+    <div><div class="brand-text" id="org-name">SME Security</div><div class="brand-sub">Operations Console</div></div>
   </div>
+  <div class="sidebar-nav">
+    <div class="nav-section-label">Monitoring</div>
+    <button class="nav-item active" data-page="overview"   onclick="goTo('overview')"><span class="icon">&#x1F4CA;</span>Overview</button>
+    <button class="nav-item"        data-page="status"     onclick="goTo('status')"><span class="icon">&#x1F5A5;</span>Live Status</button>
+    <button class="nav-item"        data-page="inventory"  onclick="goTo('inventory')"><span class="icon">&#x1F4CB;</span>Inventory</button>
+    <button class="nav-item"        data-page="alerts"     onclick="goTo('alerts')"><span class="icon">&#x1F6A8;</span>Alerts<span class="nav-badge" id="ab" style="display:none">0</span></button>
+    <div class="nav-section-label" style="margin-top:8px">Management</div>
+    <button class="nav-item" data-page="apps"        onclick="goTo('apps')"><span class="icon">&#x1F4E6;</span>App Inventory</button>
+    <button class="nav-item" data-page="enforcement" onclick="goTo('enforcement')"><span class="icon">&#x1F512;</span>Enforcement</button>
+    <button class="nav-item" data-page="rules"       onclick="goTo('rules')"><span class="icon">&#x1F4D0;</span>Detection Rules</button>
+    <div id="admin-nav" style="display:none">
+      <div class="nav-section-label" style="margin-top:8px">Admin</div>
+      <button class="nav-item" data-page="users"    onclick="goTo('users')"><span class="icon">&#x1F465;</span>Users</button>
+      <button class="nav-item" data-page="settings" onclick="goTo('settings')"><span class="icon">&#x2699;</span>Settings</button>
+    </div>
+    <div id="analyst-nav" style="display:none">
+      <div class="nav-section-label" style="margin-top:8px">Account</div>
+      <button class="nav-item" data-page="settings" onclick="goTo('settings')"><span class="icon">&#x2699;</span>Settings</button>
+    </div>
+  </div>
+  <div class="sidebar-footer">
+    <div class="user-pill">
+      <div class="user-avatar" id="uav">?</div>
+      <div class="user-info"><div class="user-name" id="uname">...</div><div class="user-role" id="urole">...</div></div>
+      <button class="btn btn-g" style="padding:4px 8px;font-size:11px" onclick="doLogout()">Out</button>
+    </div>
+    <div style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--muted);margin-top:8px;padding:0 4px">
+      <div class="conn-dot" id="cdot"></div>
+      <span id="ctxt">Connecting...</span>
+      <span style="margin-left:auto;font-size:10px" id="ctime"></span>
+    </div>
+  </div>
+</nav>
 
-<!-- Device Detail Modal -->
-<div class="modal-overlay" id="device-modal" style="display:none;" onclick="closeModal(event)">
-  <div class="modal" onclick="event.stopPropagation()">
-    <div class="modal-header">
-      <span class="modal-title" id="modal-hostname">Device Details</span>
-      <button class="modal-close" onclick="closeDeviceModal()">&#x2715;</button>
-    </div>
-    <div class="modal-body">
-      <div class="sub-tabs">
-        <button class="sub-tab active" data-sub="properties">Properties</button>
-        <button class="sub-tab" data-sub="alerts">Alerts</button>
-        <button class="sub-tab" data-sub="apps">Installed Apps</button>
-        <button class="sub-tab" data-sub="timeline">Timeline</button>
-      </div>
-      <div class="sub-panel active" id="sub-properties"></div>
-      <div class="sub-panel" id="sub-alerts"></div>
-      <div class="sub-panel" id="sub-apps"></div>
-      <div class="sub-panel" id="sub-timeline"></div>
+<div class="main" id="main" style="display:none">
+  <div class="topbar">
+    <div class="page-title" id="ptitle">Overview</div>
+    <div style="display:flex;align-items:center;gap:8px">
+      <button class="btn btn-g" style="font-size:11px" onclick="refreshAll()">&#x21BB; Refresh</button>
     </div>
   </div>
+  <div class="content" id="content">Loading...</div>
 </div>
 
-<!-- Alert Detail Modal -->
-<div class="modal-overlay" id="alert-modal" style="display:none;" onclick="closeModal(event)">
-  <div class="modal" style="max-width:600px;" onclick="event.stopPropagation()">
-    <div class="modal-header">
-      <span class="modal-title" id="alert-modal-title">Alert Detail</span>
-      <button class="modal-close" onclick="document.getElementById('alert-modal').style.display='none'">&#x2715;</button>
-    </div>
-    <div class="modal-body" id="alert-modal-body"></div>
+<!-- Modals -->
+<div id="dm" class="modal-overlay" style="display:none" onclick="cmo(event,'dm')">
+  <div class="modal" style="max-width:900px" onclick="event.stopPropagation()">
+    <div class="modal-hdr"><span class="modal-title" id="dm-t">Device</span><button class="modal-x" onclick="cM('dm')">&#x2715;</button></div>
+    <div class="modal-body" id="dm-b"></div>
+  </div>
+</div>
+<div id="am" class="modal-overlay" style="display:none" onclick="cmo(event,'am')">
+  <div class="modal" style="max-width:680px" onclick="event.stopPropagation()">
+    <div class="modal-hdr"><span class="modal-title" id="am-t">Alert</span><button class="modal-x" onclick="cM('am')">&#x2715;</button></div>
+    <div class="modal-body" id="am-b"></div>
+  </div>
+</div>
+<div id="um" class="modal-overlay" style="display:none" onclick="cmo(event,'um')">
+  <div class="modal" style="max-width:440px" onclick="event.stopPropagation()">
+    <div class="modal-hdr"><span class="modal-title" id="um-t">User</span><button class="modal-x" onclick="cM('um')">&#x2715;</button></div>
+    <div class="modal-body" id="um-b"></div>
+    <div class="modal-foot"><button class="btn btn-g" onclick="cM('um')">Cancel</button><button class="btn btn-p" onclick="saveUser()">Save</button></div>
+  </div>
+</div>
+<div id="rm" class="modal-overlay" style="display:none" onclick="cmo(event,'rm')">
+  <div class="modal" style="max-width:700px" onclick="event.stopPropagation()">
+    <div class="modal-hdr"><span class="modal-title" id="rm-t">Rule</span><button class="modal-x" onclick="cM('rm')">&#x2715;</button></div>
+    <div class="modal-body" id="rm-b"></div>
+    <div class="modal-foot"><button class="btn btn-g" onclick="cM('rm')">Cancel</button><button class="btn btn-p" onclick="saveRule()">Save Rule</button></div>
   </div>
 </div>
 
 <script>
-// ---------------------------------------------------------------- State
-let adminKey = null;
-let allAlerts = [];
-let allDevices = [];
-let allMachines = [];
-let currentDevice = null;
 
-// ---------------------------------------------------------------- Utils
-function parseTS(ts) {
-  if (!ts) return null;
-  const d = new Date(/Z$|[+-]\d{2}:\d{2}$/.test(ts) ? ts : ts + 'Z');
-  return isNaN(d) ? null : d;
-}
-function fmtTS(ts) { const d = parseTS(ts); return d ? d.toLocaleString() : ''; }
-function fmtAge(ts) {
-  const d = parseTS(ts); if (!d) return '';
-  const s = Math.floor((Date.now() - d) / 1000);
-  if (s < 60) return s + 's ago';
-  if (s < 3600) return Math.floor(s/60) + 'm ago';
-  if (s < 86400) return Math.floor(s/3600) + 'h ago';
-  return Math.floor(s/86400) + 'd ago';
-}
-function statusDot(mod) {
-  if (!mod) return '<span class="dot amber"></span>No data';
-  const s = mod.summary || {};
-  let ok = mod.compliant;
-  if (ok === null || ok === undefined) ok = s.non_compliant !== undefined ? s.non_compliant === 0 : undefined;
-  if (ok === true)  return '<span class="dot green"></span>OK';
-  if (ok === false) return '<span class="dot red"></span>Needs attention';
-  return '<span class="dot amber"></span>Unknown';
-}
-function severityBadge(sev) {
-  const s = (sev || '').toUpperCase();
-  const cls = s === 'CRITICAL' ? 'badge-red' : s === 'HIGH' ? 'badge-amber' : s === 'MEDIUM' ? 'badge-blue' : 'badge-muted';
-  return `<span class="badge ${cls}">${sev || '?'}</span>`;
-}
-function statusBadge(st) {
-  const cls = st === 'New' ? 'badge-red' : st === 'Open' ? 'badge-amber' : 'badge-muted';
-  return `<span class="badge ${cls}">${st}</span>`;
+let _tok=null,_user=null,_M=[],_D=[],_A=[],_R=[];
+let _selA=new Set(),_editR=null,_editU=null,_page='overview';
+let _charts={};
+const PTITLES={overview:'Overview',status:'Live Status',inventory:'Inventory',alerts:'Alerts',apps:'App Inventory',enforcement:'Enforcement',rules:'Detection Rules',users:'User Management',settings:'Settings'};
+
+function pTS(s){if(!s)return null;const hasTz=/Z$|[+-]\d{2}:\d{2}$/.test(s);const d=new Date(hasTz?s:s+'Z');return isNaN(d)?null:d;}
+function fmtTS(s){const d=pTS(s);return d?d.toLocaleString():'-';}
+function fmtAge(s){const d=pTS(s);if(!d)return '-';const sc=Math.floor((Date.now()-d)/1000);if(sc<60)return sc+'s ago';if(sc<3600)return Math.floor(sc/60)+'m ago';if(sc<86400)return Math.floor(sc/3600)+'h ago';return Math.floor(sc/86400)+'d ago';}
+function fmtMin(m){if(m===null||m===undefined)return 'N/A';if(m<60)return m.toFixed(0)+'m';return (m/60).toFixed(1)+'h';}
+function esc(s){return(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+function eA(s){return(s||'').replace(/'/g,"\\'").replace(/"/g,'&quot;');}
+function sC(v){const s=(v||'').toUpperCase();return s==='CRITICAL'||s==='SEVERE'?'b-red':s==='HIGH'?'b-amber':s==='MEDIUM'?'b-blue':'b-muted';}
+function stC(s){return s==='New'?'b-red':s==='Open'?'b-amber':'b-muted';}
+function sI(s){return{defender:'&#x1F6E1;',playbook:'&#x1F4CB;',playbook_via_defender:'&#x1F517;'}[s]||'&#x2753;';}
+function rC(r){return r==='critical'||r==='high'?'b-red':r==='medium'?'b-blue':'b-muted';}
+
+async function api(p,o={}){
+  const h={'Content-Type':'application/json',...(o.headers||{})};
+  if(_tok)h['Authorization']='Bearer '+_tok;
+  const r=await fetch(p,{...o,headers:h});
+  if(r.status===401){doLogout();throw new Error('Session expired');}
+  return r;
 }
 
-async function api(path, opts = {}) {
-  const headers = { 'Content-Type': 'application/json', ...(opts.headers || {}) };
-  if (adminKey) headers['X-Admin-Key'] = adminKey;
-  const res = await fetch(path, { ...opts, headers });
-  return res;
+async function doLogin(){
+  const u=document.getElementById('lu').value.trim();
+  const p=document.getElementById('lp').value;
+  const e=document.getElementById('lerr');
+  e.style.display='none';
+  try{
+    const r=await fetch('/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,password:p})});
+    if(!r.ok){const d=await r.json().catch(()=>({detail:'Login failed'}));e.textContent=d.detail||'Invalid credentials';e.style.display='block';return;}
+    const d=await r.json();
+    _tok=d.token;_user=d;
+    sessionStorage.setItem('sme_tok',_tok);sessionStorage.setItem('sme_usr',JSON.stringify(_user));
+    initApp();
+  }catch(ex){e.textContent='Error: '+ex;e.style.display='block';}
+}
+function doLogout(){sessionStorage.clear();_tok=null;_user=null;document.getElementById('main').style.display='none';document.getElementById('ls').style.display='flex';document.getElementById('lp').value='';}
+document.getElementById('lp').addEventListener('keydown',e=>{if(e.key==='Enter')doLogin();});
+
+function initApp(){
+  document.getElementById('ls').style.display='none';document.getElementById('main').style.display='block';
+  document.getElementById('uname').textContent=_user.username;
+  document.getElementById('urole').textContent=_user.role;
+  document.getElementById('uav').textContent=(_user.username||'?')[0].toUpperCase();
+  if(_user.role==='admin')document.getElementById('admin-nav').style.display='block';
+  else if(_user.role==='analyst')document.getElementById('analyst-nav').style.display='block';
+  refreshAll();setInterval(refreshAll,30000);
+}
+(function(){const t=sessionStorage.getItem('sme_tok');const u=sessionStorage.getItem('sme_usr');if(t&&u){_tok=t;_user=JSON.parse(u);initApp();}})();
+
+function goTo(pg){
+  _page=pg;
+  document.querySelectorAll('.nav-item').forEach(b=>b.classList.toggle('active',b.dataset.page===pg));
+  document.getElementById('ptitle').textContent=PTITLES[pg]||pg;
+  renderPage();
 }
 
-function getAdminKey() {
-  if (!adminKey) adminKey = prompt('Enter dashboard admin key:');
-  return !!adminKey;
+async function refreshAll(){
+  try{
+    const[sm,dm,am]=await Promise.all([
+      api('/api/status').then(r=>r.ok?r.json():null),
+      api('/api/inventory').then(r=>r.ok?r.json():null),
+      api('/api/alerts').then(r=>r.ok?r.json():null),
+    ]);
+    if(sm)_M=sm.machines||[];
+    if(dm)_D=dm.devices||[];
+    if(am)_A=am.alerts||[];
+    const nc=_A.filter(a=>a.status==='New').length;
+    const ab=document.getElementById('ab');
+    if(nc>0){ab.textContent=nc;ab.style.display='inline';}else ab.style.display='none';
+    document.getElementById('cdot').className='conn-dot';
+    document.getElementById('ctxt').textContent=_M.length+' machine(s)';
+    document.getElementById('ctime').textContent='Updated '+new Date().toLocaleTimeString();
+    renderPage();
+  }catch(ex){document.getElementById('cdot').className='conn-dot off';document.getElementById('ctxt').textContent='Connection error';}
 }
 
-// ---------------------------------------------------------------- Nav
-document.querySelectorAll('.nav-btn').forEach(btn => {
-  btn.addEventListener('click', () => {
-    document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
-    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
-    btn.classList.add('active');
-    document.getElementById('panel-' + btn.dataset.panel).classList.add('active');
-  });
-});
-
-// ---------------------------------------------------------------- STATUS
-const MOD_LABELS = {
-  defender: 'Defender Hardening', dns: 'DNS Enforcement', usb: 'USB Lockdown',
-  process_monitor: 'Process Monitor', threat: 'Threat Detections',
-};
-
-async function loadStatus() {
-  const res = await api('/api/status');
-  if (!res.ok) return;
-  const { machines } = await res.json();
-  allMachines = machines || [];
-  const grid = document.getElementById('status-grid');
-  document.getElementById('subtitle').textContent = `${allMachines.length} machine(s) reporting`;
-
-  if (!allMachines.length) {
-    grid.innerHTML = '<div class="empty">No machines reporting yet</div>'; return;
-  }
-  grid.innerHTML = allMachines.map(m => {
-    const rows = Object.entries(MOD_LABELS).map(([k, label]) => {
-      const mod = m.modules[k];
-      return `<div class="mod-row">
-        <span class="mod-left">${statusDot(mod)}&nbsp;${label}</span>
-        <span class="ts">${mod ? fmtAge(mod.received_at) : ''}</span>
-      </div>`;
-    }).join('');
-    const se = escAttr(m.site_name), he = escAttr(m.hostname);
-    return `<div class="card">
-      <div class="card-header">
-        <span class="hostname">${m.hostname}</span>
-        <span class="site-tag">${m.site_name}</span>
-      </div>
-      <div class="modules">${rows}</div>
-      <div class="btn-row">
-        <button class="btn btn-ghost" onclick="cmd('${se}','${he}','force_audit',this)">Force Audit</button>
-        <button class="btn btn-success" onclick="cmd('${se}','${he}','enable_enforcement',this)">Enable Enforce</button>
-        <button class="btn btn-ghost" onclick="cmd('${se}','${he}','disable_enforcement',this)">Disable Enforce</button>
-      </div>
-      <div class="btn-row">
-        <button class="btn btn-danger" onclick="cmd('${se}','${he}','isolate_host',this)">Isolate Host</button>
-        <button class="btn btn-primary" onclick="cmd('${se}','${he}','restore_network',this)">Restore Network</button>
-      </div>
-      <div class="cmd-status"></div>
-    </div>`;
-  }).join('');
-  // Populate site dropdowns
-  const sites = [...new Set(allMachines.map(m => m.site_name))];
-  ['site-select','machine-site-select'].forEach(id => {
-    const el = document.getElementById(id);
-    const cur = el.value;
-    el.innerHTML = sites.map(s => `<option${s===cur?' selected':''}>${s}</option>`).join('');
-  });
-  updateMachineList();
+function renderPage(){
+  const el=document.getElementById('content');
+  if(_page==='overview')renderOverview(el);
+  else if(_page==='status')renderStatus(el);
+  else if(_page==='inventory')renderInventory(el);
+  else if(_page==='alerts')renderAlerts(el);
+  else if(_page==='apps')renderApps(el);
+  else if(_page==='enforcement')renderEnforcement(el);
+  else if(_page==='rules')renderRules(el);
+  else if(_page==='users')renderUsers(el);
+  else if(_page==='settings')renderSettings(el);
+  else el.innerHTML='<div class="empty">Page not found</div>';
 }
 
-function escAttr(s) { return (s||'').replace(/'/g,"\\'").replace(/"/g,'&quot;'); }
+async function renderOverview(el){
+  el.innerHTML='<div class="empty">Loading...</div>';
+  try{
+    const r=await api('/api/overview');if(!r.ok)return;
+    const d=await r.json();
+    const{devices:dv,alerts:al,soc,modules,recent_alerts:ra}=d;
+    const sevC={Critical:'#ef4444',Severe:'#f97316',High:'#f59e0b',Medium:'#3b82f6',Low:'#64748b'};
+    const mttdP=soc.mttd_minutes?Math.min(100,Math.round(soc.mttd_target/soc.mttd_minutes*100)):0;
+    const mttrP=soc.mttr_minutes?Math.min(100,Math.round(soc.mttr_target/soc.mttr_minutes*100)):0;
+    const mttdCol=mttdP>=100?'#10b981':mttdP>=50?'#f59e0b':'#ef4444';
+    const mttrCol=mttrP>=100?'#10b981':mttrP>=50?'#f59e0b':'#ef4444';
+    el.innerHTML=`
+<div class="stat-grid">
+  <div class="stat-card green" onclick="goTo('inventory')">
+    <div class="stat-num" style="color:var(--green)">${dv.online}</div><div class="stat-label">Online</div><div class="stat-sub">of ${dv.total} total</div></div>
+  <div class="stat-card red" onclick="goTo('inventory')">
+    <div class="stat-num" style="color:var(--red)">${dv.offline}</div><div class="stat-label">Offline</div><div class="stat-sub">${dv.long_offline?.length||0} &gt;${dv.warning_days}d</div></div>
+  <div class="stat-card red" onclick="goTo('alerts')">
+    <div class="stat-num" style="color:var(--red)">${al.New||0}</div><div class="stat-label">New Alerts</div><div class="stat-sub">${al.Open||0} open</div></div>
+  <div class="stat-card amber" onclick="goTo('alerts')">
+    <div class="stat-num" style="color:var(--amber)">${al.total||0}</div><div class="stat-label">Total Alerts</div><div class="stat-sub">Last 30 days</div></div>
+  <div class="stat-card blue" onclick="goTo('alerts')">
+    <div class="stat-num" style="color:var(--blue)">${fmtMin(soc.mttd_minutes)}</div><div class="stat-label">Avg MTTD</div><div class="stat-sub">Target: ${fmtMin(soc.mttd_target)}</div>
+    <div class="perf-bar"><div class="perf-fill" style="width:${mttdP}%;background:${mttdCol}"></div></div></div>
+  <div class="stat-card purple" onclick="goTo('alerts')">
+    <div class="stat-num" style="color:var(--purple)">${fmtMin(soc.mttr_minutes)}</div><div class="stat-label">Avg MTTR</div><div class="stat-sub">Target: ${fmtMin(soc.mttr_target)}</div>
+    <div class="perf-bar"><div class="perf-fill" style="width:${mttrP}%;background:${mttrCol}"></div></div></div>
+</div>
+<div class="chart-row">
+  <div class="chart-box"><div style="font-size:12px;font-weight:600;color:var(--muted2);margin-bottom:14px">Alert Trend (7 Days)</div><canvas id="tc" height="120"></canvas></div>
+  <div class="chart-box"><div style="font-size:12px;font-weight:600;color:var(--muted2);margin-bottom:14px">Severity Breakdown</div><canvas id="sc" height="120"></canvas></div>
+</div>
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+  <div class="card"><div class="card-header"><div class="card-title">&#x1F6A8; Recent Unresolved</div><button class="btn btn-g" style="font-size:11px" onclick="goTo('alerts')">All &#x2192;</button></div><div id="ov-ra"></div></div>
+  <div class="card"><div class="card-header"><div class="card-title">&#x1F6E1; Module Compliance</div></div><div id="ov-mod"></div></div>
+</div>`;
 
-async function cmd(site, hostname, command, btn) {
-  if (!getAdminKey()) return;
-  btn.disabled = true;
-  const statusEl = btn.closest('.card').querySelector('.cmd-status');
-  statusEl.textContent = 'Sending...';
-  try {
-    const res = await api('/api/command', {
-      method: 'POST',
-      body: JSON.stringify({ site_name: site, hostname, command }),
-    });
-    if (res.status === 401) { statusEl.textContent = 'Invalid admin key.'; adminKey = null; }
-    else if (!res.ok) { const d = await res.json(); statusEl.textContent = 'Error: ' + (d.detail || res.statusText); }
-    else statusEl.textContent = `"${command}" queued — will run within 5 min.`;
-  } catch(e) { statusEl.textContent = 'Network error: ' + e; }
-  finally { btn.disabled = false; }
+    // Charts
+    const tL=(al.trend||[]).map(t=>t.date.slice(5));
+    const tD=(al.trend||[]).map(t=>t.count);
+    if(_charts.tc)_charts.tc.destroy();
+    _charts.tc=new Chart(document.getElementById('tc'),{type:'line',data:{labels:tL,datasets:[{label:'Alerts',data:tD,borderColor:'#3b82f6',backgroundColor:'rgba(59,130,246,.08)',tension:.4,fill:true,pointRadius:3}]},options:{responsive:true,plugins:{legend:{display:false}},scales:{y:{beginAtZero:true,ticks:{color:'#64748b'},grid:{color:'rgba(30,45,71,.5)'}},x:{ticks:{color:'#64748b'},grid:{display:false}}}}});
+    const sK=Object.keys(al.severity_counts||{}).filter(k=>al.severity_counts[k]>0);
+    if(_charts.sc)_charts.sc.destroy();
+    if(sK.length)_charts.sc=new Chart(document.getElementById('sc'),{type:'doughnut',data:{labels:sK,datasets:[{data:sK.map(k=>al.severity_counts[k]),backgroundColor:sK.map(k=>sevC[k]||'#64748b'),borderWidth:0}]},options:{responsive:true,cutout:'65%',plugins:{legend:{position:'right',labels:{color:'#94a3b8',boxWidth:10,padding:10}}}}});
+
+    const raEl=document.getElementById('ov-ra');
+    raEl.innerHTML=(!ra?.length)?'<div class="empty" style="padding:16px">No unresolved alerts</div>':ra.slice(0,6).map(a=>`
+<div style="display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--border);cursor:pointer" onclick='oA(${JSON.stringify(JSON.stringify(a))})'>
+  <span class="badge ${sC(a.severity)}">${esc(a.severity)||'?'}</span>
+  <div style="flex:1;min-width:0"><div style="font-size:12px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(a.threat_name||'Unknown')}</div>
+  <div style="font-size:10px;color:var(--muted)">${esc(a.hostname||'?')} &middot; ${fmtAge(a.detected_at||a.time)}</div></div>
+  <span class="badge ${stC(a.status||'New')}">${a.status||'New'}</span>
+</div>`).join('');
+
+    const ML={defender:'Defender',dns:'DNS',usb:'USB',process_monitor:'Process Mon.',threat:'Threat'};
+    document.getElementById('ov-mod').innerHTML=Object.entries(modules||{}).map(([m,s])=>`
+<div style="display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid var(--border)">
+  <span style="font-size:12px">${ML[m]||m}</span>
+  <div style="font-size:11px;display:flex;gap:6px">
+    <span style="color:var(--green)">${s.compliant||0} OK</span>
+    ${s.non_compliant?`<span style="color:var(--red)">${s.non_compliant} !</span>`:''}
+  </div></div>`).join('')||'<div class="empty" style="padding:16px">No data</div>';
+  }catch(ex){el.innerHTML=`<div class="empty">Error: ${ex}</div>`;}
 }
 
-// ---------------------------------------------------------------- INVENTORY
-async function loadInventory() {
-  const res = await api('/api/inventory');
-  if (!res.ok) return;
-  const { devices } = await res.json();
-  allDevices = devices || [];
-  renderInventory();
+function renderStatus(el){
+  if(!_M.length){el.innerHTML='<div class="empty">No machines reporting yet</div>';return;}
+  const ML={defender:'DEF',dns:'DNS',usb:'USB',process_monitor:'PROC',threat:'THREAT'};
+  el.innerHTML=`<div class="stat-grid">${_M.map(m=>{
+    const mds=Object.entries(ML).map(([k,l])=>{const mod=m.modules[k];const c=mod?.compliant===true?'ok':mod?.compliant===false?'fail':'unk';return `<span class="mod-dot md-${c}" title="${l}"></span>`;}).join(' ');
+    const se=eA(m.site_name),he=eA(m.hostname);const canC=_user?.perms?.includes('commands');
+    return `<div class="card"><div class="card-header"><div><div style="font-weight:700;font-size:14px">${esc(m.hostname)}</div><div style="font-size:11px;color:var(--muted)">${esc(m.site_name)}</div></div><span class="badge ${m.alerts?.length?'b-red':'b-green'}">${m.alerts?.length||0} alerts</span></div>
+<div style="display:flex;gap:4px;margin-bottom:12px">${mds}</div>
+${canC?`<div class="btn-row">
+  <button class="btn btn-g" style="font-size:11px" onclick="cmd('${se}','${he}','force_audit',this)">&#x21BA; Audit</button>
+  <button class="btn btn-s" style="font-size:11px" onclick="cmd('${se}','${he}','enable_enforcement',this)">&#x2713; Enforce</button>
+  <button class="btn btn-d" style="font-size:11px" onclick="cmd('${se}','${he}','isolate_host',this)">&#x26A1; Isolate</button>
+  <button class="btn btn-g" style="font-size:11px" onclick="cmd('${se}','${he}','restore_network',this)">&#x21A9; Restore</button></div>
+<div class="cmd-st" style="font-size:11px;color:var(--muted);margin-top:6px;min-height:14px"></div>`:''}
+</div>`;}).join('')}</div>`;
 }
 
-function renderInventory() {
-  const search = document.getElementById('inv-search').value.toLowerCase();
-  const statusF = document.getElementById('inv-status-filter').value;
-  const now = Date.now();
-  let rows = allDevices.filter(d => {
-    const online = (parseTS(d.last_seen) && (now - parseTS(d.last_seen).getTime()) < 3600000);
-    if (statusF === 'online' && !online) return false;
-    if (statusF === 'offline' && online) return false;
-    if (search && !d.hostname?.toLowerCase().includes(search) && !d.site_name?.toLowerCase().includes(search)) return false;
-    return true;
-  });
-  const body = document.getElementById('inv-body');
-  if (!rows.length) { body.innerHTML = '<tr><td colspan="7" class="empty">No devices found</td></tr>'; return; }
-  body.innerHTML = rows.map(d => {
-    const online = parseTS(d.last_seen) && (now - parseTS(d.last_seen).getTime()) < 3600000;
-    const mods = (d.modules_reported || []).join(', ') || '-';
-    return `<tr class="clickable" onclick="openDeviceDetail('${escAttr(d.site_name)}','${escAttr(d.hostname)}')">
-      <td><strong>${d.hostname || '-'}</strong></td>
-      <td>${d.site_name || '-'}</td>
-      <td style="font-size:11px;color:var(--muted);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${(d.os||'-').split('-')[0]}</td>
-      <td><span class="badge badge-muted">${d.agent_version || '-'}</span></td>
-      <td style="font-size:11px;color:var(--muted);">${mods}</td>
-      <td><span title="${fmtTS(d.last_seen)}">${fmtAge(d.last_seen)}</span></td>
-      <td><span class="badge ${online?'badge-green':'badge-red'}">${online?'Online':'Offline'}</span></td>
-    </tr>`;
-  }).join('');
+async function cmd(site,host,command,btn){
+  btn.disabled=true;const st=btn.closest('.card').querySelector('.cmd-st');
+  if(st)st.textContent='Sending...';
+  try{const r=await api('/api/command',{method:'POST',body:JSON.stringify({site_name:site,hostname:host,command})});
+    if(!r.ok){const d=await r.json();if(st)st.textContent='Error: '+(d.detail||r.status);}
+    else if(st)st.textContent=`"${command}" queued`;
+  }catch(ex){if(st)st.textContent='Error: '+ex;}finally{btn.disabled=false;}
 }
 
-['inv-search','inv-status-filter'].forEach(id =>
-  document.getElementById(id).addEventListener('input', renderInventory));
-
-// ---------------------------------------------------------------- DEVICE DETAIL
-async function openDeviceDetail(site, hostname) {
-  document.getElementById('modal-hostname').textContent = hostname;
-  document.getElementById('device-modal').style.display = 'flex';
-  ['properties','alerts','apps','timeline'].forEach(s => {
-    const el = document.getElementById('sub-'+s);
-    el.innerHTML = '<div style="color:var(--muted);padding:20px 0;">Loading...</div>';
-  });
-  document.querySelectorAll('.sub-tab').forEach((t,i) => { t.classList.toggle('active',i===0); });
-  document.querySelectorAll('.sub-panel').forEach((p,i) => { p.classList.toggle('active',i===0); });
-
-  const res = await api(`/api/device/${encodeURIComponent(site)}/${encodeURIComponent(hostname)}`);
-  if (!res.ok) { document.getElementById('sub-properties').innerHTML = '<div class="empty">Failed to load device data</div>'; return; }
-  const detail = await res.json();
-  currentDevice = { site, hostname, detail };
-  renderDeviceProperties(detail);
-  renderDeviceAlerts(detail);
-  renderDeviceApps(detail);
-  renderDeviceTimeline(detail);
+let _iF='',_iS='';
+function renderInventory(el){
+  let rows=_D;
+  if(_iS){const n=Date.now();rows=rows.filter(d=>{const ls=pTS(d.last_seen);const on=ls&&(n-ls)<3600000;return _iS==='online'?on:!on;});}
+  if(_iF){const f=_iF.toLowerCase();rows=rows.filter(d=>(d.hostname||'').toLowerCase().includes(f)||(d.site_name||'').toLowerCase().includes(f));}
+  el.innerHTML=`<div class="filter-bar">
+  <input class="fi" value="${esc(_iF)}" placeholder="Search..." style="width:200px" oninput="_iF=this.value;renderInventory(document.getElementById('content'))">
+  <select class="fs" onchange="_iS=this.value;renderInventory(document.getElementById('content'))">
+    <option value="" ${!_iS?'selected':''}>All status</option>
+    <option value="online" ${_iS==='online'?'selected':''}>Online</option>
+    <option value="offline" ${_iS==='offline'?'selected':''}>Offline</option>
+  </select><span style="margin-left:auto;font-size:12px;color:var(--muted)">${rows.length}/${_D.length} devices</span></div>
+<div class="table-wrap"><table><thead><tr><th>Hostname</th><th>Site</th><th>OS</th><th>Agent</th><th>Last Seen</th><th>Status</th></tr></thead>
+<tbody>${rows.map(d=>{const n=Date.now();const ls=pTS(d.last_seen);const on=ls&&(n-ls)<3600000;
+return `<tr class="cr" onclick="openDev('${eA(d.site_name)}','${eA(d.hostname)}')">
+<td><strong>${esc(d.hostname||'-')}</strong></td><td>${esc(d.site_name||'-')}</td>
+<td style="font-size:11px;color:var(--muted);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc((d.os||'-').split('(')[0].trim())}</td>
+<td><span class="badge b-muted">${esc(d.agent_version||'-')}</span></td>
+<td>${fmtAge(d.last_seen)}</td>
+<td><span class="badge ${on?'b-green':'b-red'}">${on?'Online':'Offline'}</span></td></tr>`;
+}).join('')||'<tr><td colspan="6" class="empty">No devices</td></tr>'}</tbody></table></div>`;
 }
 
-function renderDeviceProperties(detail) {
-  const d = detail.device || {};
-  const mods = detail.modules || {};
-  document.getElementById('sub-properties').innerHTML = `
-    <div class="prop-grid" style="margin-bottom:16px;">
-      <div class="prop"><div class="prop-label">Hostname</div><div class="prop-value">${d.hostname||'-'}</div></div>
-      <div class="prop"><div class="prop-label">Site</div><div class="prop-value">${d.site_name||'-'}</div></div>
-      <div class="prop"><div class="prop-label">Operating System</div><div class="prop-value" style="font-size:12px;">${d.os||'-'}</div></div>
-      <div class="prop"><div class="prop-label">Agent Version</div><div class="prop-value">${d.agent_version||'-'}</div></div>
-      <div class="prop"><div class="prop-label">First Seen</div><div class="prop-value" style="font-size:12px;">${fmtTS(d.first_seen)||'-'}</div></div>
-      <div class="prop"><div class="prop-label">Last Seen</div><div class="prop-value" style="font-size:12px;">${fmtTS(d.last_seen)||'-'}</div></div>
-    </div>
-    <h4 style="margin-bottom:10px;font-size:13px;color:var(--muted);">MODULE STATUS</h4>
-    <div class="modules">
-      ${Object.entries(MOD_LABELS).map(([k,label]) => {
-        const mod = mods[k]; const ts = mod?.sent_at || mod?.timestamp;
-        return `<div class="mod-row">
-          <span class="mod-left">${statusDot(mod ? {compliant: mod.summary?.non_compliant === 0} : null)}&nbsp;${label}</span>
-          <span class="ts">${fmtTS(ts)}</span>
-        </div>`;
-      }).join('')}
-    </div>`;
+async function openDev(site,hostname){
+  document.getElementById('dm-t').textContent=hostname;
+  document.getElementById('dm-b').innerHTML='<div class="empty">Loading...</div>';
+  document.getElementById('dm').style.display='flex';
+  const r=await api(`/api/device/${encodeURIComponent(site)}/${encodeURIComponent(hostname)}`);
+  if(!r.ok){document.getElementById('dm-b').innerHTML='<div class="empty">Failed to load</div>';return;}
+  const d=await r.json();
+  document.getElementById('dm-b').innerHTML=`<div class="stabs"><button class="stab active" data-s="dp">Properties</button><button class="stab" data-s="da">Alerts</button><button class="stab" data-s="dap">Apps</button><button class="stab" data-s="dt">Timeline</button></div>
+<div class="spanel active" id="sub-dp"></div><div class="spanel" id="sub-da"></div><div class="spanel" id="sub-dap"></div><div class="spanel" id="sub-dt"></div>`;
+  document.querySelectorAll('#dm .stab').forEach(t=>t.addEventListener('click',()=>{
+    document.querySelectorAll('#dm .stab').forEach(x=>x.classList.remove('active'));
+    document.querySelectorAll('#dm .spanel').forEach(x=>x.classList.remove('active'));
+    t.classList.add('active');document.getElementById('sub-'+t.dataset.s).classList.add('active');
+  }));
+  const dev=d.device||{};
+  document.getElementById('sub-dp').innerHTML=`<div class="grid2" style="margin-bottom:14px">
+<div class="prop"><div class="pl">Hostname</div><div class="pv">${esc(dev.hostname||'-')}</div></div>
+<div class="prop"><div class="pl">Site</div><div class="pv">${esc(dev.site_name||'-')}</div></div>
+<div class="prop"><div class="pl">OS</div><div class="pv" style="font-size:12px">${esc(dev.os||'-')}</div></div>
+<div class="prop"><div class="pl">Agent</div><div class="pv">${esc(dev.agent_version||'-')}</div></div>
+<div class="prop"><div class="pl">First Seen</div><div class="pv" style="font-size:12px">${fmtTS(dev.first_seen)}</div></div>
+<div class="prop"><div class="pl">Last Seen</div><div class="pv" style="font-size:12px">${fmtTS(dev.last_seen)}</div></div></div>`;
+  const als=d.alerts||[];
+  document.getElementById('sub-da').innerHTML=als.length?als.map(a=>`<div style="padding:8px 0;border-bottom:1px solid var(--border);cursor:pointer" onclick='oA(${JSON.stringify(JSON.stringify(a))})'>
+<div style="display:flex;justify-content:space-between"><span style="font-size:13px;font-weight:500">${esc(a.threat_name||'?')}</span><span class="badge ${stC(a.status||'New')}">${a.status||'New'}</span></div>
+<div style="font-size:11px;color:var(--muted)">${fmtTS(a.detected_at||a.time)}</div></div>`).join(''):'<div class="empty" style="padding:24px">No alerts</div>';
+  const apps=d.apps||[];const cA=_user?.perms?.includes('apps');
+  const fmtD=s=>s&&s.length>=8?`${s.slice(0,4)}-${s.slice(4,6)}-${s.slice(6,8)}`:'-';
+  document.getElementById('sub-dap').innerHTML=apps.length?`<div class="table-wrap"><table>
+<thead><tr><th>Name</th><th>Version</th><th>Install</th><th>Modified</th><th>Risk</th><th>OK?</th>${cA?'<th></th>':''}</tr></thead>
+<tbody>${apps.map(a=>`<tr>
+<td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(a.name||'-')}</td>
+<td style="font-size:11px;font-family:monospace">${esc(a.version||'-')}</td>
+<td style="font-size:11px">${fmtD(a.install_date)}</td>
+<td style="font-size:11px;color:var(--muted)">${fmtD(a.modified_date)}</td>
+<td><span class="badge ${rC(a.risk_level)}">${(a.risk_level||'low').toUpperCase()}</span></td>
+<td>${a.sanctioned!==false?'<span style="color:var(--green)">&#x2713;</span>':'<span style="color:var(--red)">&#x2717;</span>'}</td>
+${cA?`<td class="iac"><button class="btn btn-g" style="font-size:10px;padding:3px 7px" onclick="sancApp('${eA(a.name)}',${a.sanctioned===false})">${a.sanctioned===false?'Sanction':'Unsanction'}</button><button class="btn btn-d" style="font-size:10px;padding:3px 7px" onclick="uinstApp('${eA(site)}','${eA(hostname)}','${eA(a.name)}')">Uninstall</button></td>`:''}
+</tr>`).join('')}</tbody></table></div>`:'<div class="empty" style="padding:24px">No app data yet</div>';
+
+  const tl=d.timeline||[];
+  const TI={process_creation:'&#x2699;',logon:'&#x1F511;',logon_failure:'&#x26A0;',logoff:'&#x1F6AA;',service_installed:'&#x1F6E0;',service_crash:'&#x1F4A5;',threat_detected:'&#x1F6A8;',rule_match:'&#x1F4CB;',usb_execution:'&#x1F4BE;',suspicious_process:'&#x1F534;',network_connection:'&#x1F310;',defender:'&#x1F6E1;'};
+  const TC={process_creation:'var(--blue)',logon:'var(--green)',logon_failure:'var(--red)',logoff:'var(--muted)',service_installed:'var(--amber)',service_crash:'var(--red)',threat_detected:'var(--red)',rule_match:'var(--amber)',usb_execution:'var(--amber)',suspicious_process:'var(--red)',network_connection:'var(--cyan)',defender:'var(--blue)'};
+  const sub=document.getElementById('sub-dt');
+  if(!tl.length){sub.innerHTML='<div class="empty" style="padding:24px">No timeline yet. Collects every 30 min after startup.</div>';return;}
+  sub.innerHTML=`<div class="scroll">${tl.slice().reverse().map(e=>{
+    const et=e.event_type||e.source||'event';const ic=TI[et]||'&#x25CF;';const co=TC[et]||'var(--muted)';
+    const desc=e.threat_name||e.process_name||e.user||'(event)';
+    const dt=[e.command_line&&'cmd:'+e.command_line.substring(0,100),e.pid&&'PID:'+e.pid,e.remote_address&&'->'+e.remote_address].filter(Boolean).join(' | ');
+    return `<div class="tl-item"><div class="tl-dot" style="background:${co}"></div><div class="tl-cnt"><div class="tl-t"><span style="background:var(--surface2);padding:1px 5px;border-radius:4px;color:${co}">${ic} ${et}</span> ${fmtTS(e.time)}</div><div class="tl-e">${esc(desc)}</div>${dt?`<div class="tl-d">${esc(dt)}</div>`:''}</div></div>`;
+  }).join('')}</div>`;
 }
 
-function renderDeviceAlerts(detail) {
-  const alerts = detail.alerts || [];
-  if (!alerts.length) {
-    document.getElementById('sub-alerts').innerHTML = '<div class="empty">No alerts for this device</div>'; return;
-  }
-  document.getElementById('sub-alerts').innerHTML = alerts.map(a => `
-    <div class="alert-card severity-${(a.severity||'').toLowerCase()}" onclick="openAlertDetail(${JSON.stringify(JSON.stringify(a))})">
-      <div class="alert-title">${a.threat_name || 'Unknown threat'}</div>
-      <div class="alert-meta">
-        ${statusBadge(a.status||'New')}
-        ${severityBadge(a.severity)}
-        <span>${fmtTS(a.created_at)}</span>
-        <span>Action: ${a.action||'?'}</span>
-      </div>
-    </div>`).join('');
-}
+let _aF='',_aS='',_aSev='',_aSite='',_aG='none';
+function renderAlerts(el){
+  let f=[..._A];
+  if(_aS)f=f.filter(a=>a.status===_aS);
+  if(_aSev)f=f.filter(a=>(a.severity||'').toUpperCase()===_aSev);
+  if(_aSite)f=f.filter(a=>a.site_name===_aSite);
+  if(_aF){const q=_aF.toLowerCase();f=f.filter(a=>(a.threat_name||'').toLowerCase().includes(q)||(a.hostname||'').toLowerCase().includes(q));}
+  const sites=[...new Set(_A.map(a=>a.site_name).filter(Boolean))];
+  const cA=_user?.perms?.includes('alerts');
+  el.innerHTML=`<div class="filter-bar">
+<input class="fi" value="${esc(_aF)}" placeholder="Search..." style="width:180px" oninput="_aF=this.value;renderAlerts(document.getElementById('content'))">
+<select class="fs" onchange="_aS=this.value;renderAlerts(document.getElementById('content'))">
+  <option value="" ${!_aS?'selected':''}>All statuses</option>
+  <option value="New" ${'New'===_aS?'selected':''}>New</option>
+  <option value="Open" ${'Open'===_aS?'selected':''}>Open</option>
+  <option value="Closed" ${'Closed'===_aS?'selected':''}>Closed</option>
+</select>
+<select class="fs" onchange="_aSev=this.value;renderAlerts(document.getElementById('content'))">
+  <option value="" ${!_aSev?'selected':''}>All severities</option>
+  <option value="CRITICAL">Critical</option><option value="SEVERE">Severe</option><option value="HIGH">High</option><option value="MEDIUM">Medium</option><option value="LOW">Low</option>
+</select>
+<select class="fs" onchange="_aSite=this.value;renderAlerts(document.getElementById('content'))">
+  <option value="">All sites</option>${sites.map(s=>`<option value="${esc(s)}" ${s===_aSite?'selected':''}>${esc(s)}</option>`).join('')}
+</select>
+<select class="fs" onchange="_aG=this.value;renderAlerts(document.getElementById('content'))">
+  <option value="none">No grouping</option><option value="device">By device</option><option value="type">By threat type</option>
+</select>
+${cA?`<button class="btn btn-g" style="font-size:11px;margin-left:auto" onclick="togSelAll()">&#x2610; Select All</button>`:''}
+</div>
+${cA&&_selA.size?`<div class="bulk-bar"><span>&#x2713; <strong>${_selA.size}</strong> selected</span>
+<button class="btn btn-p" style="font-size:11px" onclick="bulkUpd('Open')">Mark Open</button>
+<button class="btn btn-s" style="font-size:11px" onclick="bulkUpd('Closed')">Mark Closed</button>
+<button class="btn btn-g" style="font-size:11px" onclick="bulkUpd('New')">Mark New</button>
+<button class="btn btn-g" style="font-size:11px" onclick="_selA.clear();renderAlerts(document.getElementById('content'))">&#x2715;</button></div>`:''}
+<div id="ab-body"></div>`;
 
-function fmtInstallDate(d) {
-  if (!d || d.length < 8) return '-';
-  return `${d.substring(0,4)}-${d.substring(4,6)}-${d.substring(6,8)}`;
-}
-
-function riskBadge(level) {
-  const map = {
-    critical: 'badge-red',
-    high:     'badge-red',
-    medium:   'badge-amber',
-    low:      'badge-muted',
-  };
-  return level ? `<span class="badge ${map[level]||'badge-muted'}" title="Risk: ${level}. Based on software category, age, and known attack surface.">${level.toUpperCase()}</span>` : '<span class="badge badge-muted">-</span>';
-}
-
-function renderDeviceApps(detail) {
-  const apps = detail.apps || [];
-  if (!apps.length) {
-    document.getElementById('sub-apps').innerHTML = `<div class="empty">No application data yet.<br>
-      <span style="font-size:12px;margin-top:8px;display:block;">Collected during the daily Defender audit (--apply needed for full data).</span></div>`;
-    return;
-  }
-  const search = document.getElementById('apps-search')?.value?.toLowerCase() || '';
-  const filtered = search ? apps.filter(a => (a.name||'').toLowerCase().includes(search) || (a.vendor||'').toLowerCase().includes(search)) : apps;
-  const riskOrder = {critical:0,high:1,medium:2,low:3};
-  const sorted = [...filtered].sort((a,b) => (riskOrder[a.risk_level]??4) - (riskOrder[b.risk_level]??4));
-
-  document.getElementById('sub-apps').innerHTML = `
-    <div style="display:flex;gap:8px;margin-bottom:10px;align-items:center;">
-      <input id="apps-search" placeholder="Search name or vendor..." value="${search}"
-        style="flex:1;background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:6px;font-size:12px;"
-        oninput="renderDeviceApps(_tlDetail||detail)">
-      <span style="font-size:12px;color:var(--muted);">${sorted.length} / ${apps.length} apps</span>
-    </div>
-    <div style="font-size:11px;color:var(--muted);margin-bottom:8px;">
-      Risk scored locally: <strong style="color:var(--red)">Critical/High</strong> = dangerous or outdated categories (RATs, EOL software >3yr),
-      <strong style="color:var(--amber)">Medium</strong> = network-facing apps, <strong style="color:var(--muted)">Low</strong> = standard software.
-    </div>
-    <div class="scroll-table"><table>
-      <thead><tr><th>Name</th><th>Version</th><th>Vendor</th><th>Install Date</th><th>Modified Date</th><th>Risk</th></tr></thead>
-      <tbody>${sorted.map(a => `<tr>
-        <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${a.name||''}">${a.name||'-'}</td>
-        <td style="font-family:monospace;font-size:11px;">${a.version||'-'}</td>
-        <td style="font-size:11px;color:var(--muted);max-width:150px;overflow:hidden;text-overflow:ellipsis;">${a.vendor||'-'}</td>
-        <td style="font-size:11px;">${fmtInstallDate(a.install_date)}</td>
-        <td style="font-size:11px;color:var(--muted);">${fmtInstallDate(a.modified_date)}</td>
-        <td>${riskBadge(a.risk_level)}</td>
-      </tr>`).join('')}</tbody>
-    </table></div>`;
-}
-
-const TL_ICONS = {
-  process_creation:  { icon: '&#x2699;',  label: 'Process',   cls: 'blue' },
-  logon:             { icon: '&#x1F511;', label: 'Logon',     cls: 'green' },
-  logon_failure:     { icon: '&#x26A0;',  label: 'Logon Fail',cls: 'red' },
-  logoff:            { icon: '&#x1F6AA;', label: 'Logoff',    cls: 'muted' },
-  service_installed: { icon: '&#x1F6E0;', label: 'Service',   cls: 'amber' },
-  service_crash:     { icon: '&#x1F4A5;', label: 'Crash',     cls: 'red' },
-  threat_detected:   { icon: '&#x1F6A8;', label: 'Threat',    cls: 'red' },
-  threat_action:     { icon: '&#x1F6A8;', label: 'Threat',    cls: 'red' },
-  rule_match:        { icon: '&#x1F4CB;', label: 'Rule',      cls: 'amber' },
-  usb_execution:     { icon: '&#x1F4BE;', label: 'USB',       cls: 'amber' },
-  suspicious_process:{ icon: '&#x1F534;', label: 'Suspicious',cls: 'red' },
-  network_connection:{ icon: '&#x1F310;', label: 'Network',   cls: 'blue' },
-  task_created:      { icon: '&#x1F5D3;', label: 'Task',      cls: 'amber' },
-  task_modified:     { icon: '&#x1F5D3;', label: 'Task',      cls: 'amber' },
-  default:           { icon: '&#x25CF;',  label: 'Event',     cls: 'muted' },
-};
-
-// Filter state for timeline
-let tlFilter = '';
-let _tlDetail = null;  // stores current device detail for re-render without re-serialising
-
-function renderDeviceTimeline(detail) {
-  _tlDetail = detail;  // save for filter re-renders without re-serialising
-  const allEvents = (detail.timeline || []).slice().reverse();
-  const el = document.getElementById('sub-timeline');
-
-  if (!allEvents.length) {
-    el.innerHTML = `<div class="empty">
-      No timeline events yet.<br>
-      <span style="font-size:12px;margin-top:8px;display:block;">
-        Timeline is collected every 30 minutes by <strong>timeline_collector.py</strong>.
-        The first collection runs 30 minutes after agent startup.<br><br>
-        <strong>Sources once running:</strong> Process creation (Security log 4688),
-        user logons/logoffs (4624/4625/4647), new services (System log 7045),
-        Defender threat actions (1116/1117), USB events, playbook rule matches,
-        and a live network connection snapshot.
-      </span>
-    </div>`;
-    return;
-  }
-
-  // Filter bar
-  const filterBar = `<div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;">
-    <input id="tl-search" value="${tlFilter}" placeholder="Filter by process, user, IP..."
-      style="flex:1;min-width:180px;background:var(--surface2);border:1px solid var(--border);
-             color:var(--text);padding:6px 10px;border-radius:6px;font-size:12px;"
-      oninput="tlFilter=this.value;if(_tlDetail)renderDeviceTimeline(_tlDetail)">
-    <select id="tl-type" style="background:var(--surface2);border:1px solid var(--border);
-             color:var(--text);padding:6px 10px;border-radius:6px;font-size:12px;"
-      onchange="if(_tlDetail)renderDeviceTimeline(_tlDetail)">
-      <option value="">All event types</option>
-      ${[...new Set(allEvents.map(e=>e.event_type||e.source).filter(Boolean))].sort()
-          .map(t=>`<option>${t}</option>`).join('')}
-    </select>
-    <span style="font-size:12px;color:var(--muted);padding:6px 0;">${allEvents.length} events</span>
-  </div>`;
-
-  const typeFilter = document.getElementById('tl-type')?.value || '';
-  const search = tlFilter.toLowerCase();
-
-  const filtered = allEvents.filter(e => {
-    if (typeFilter && (e.event_type||e.source) !== typeFilter) return false;
-    if (search) {
-      const haystack = [e.process_name,e.command_line,e.user,e.threat_name,
-                        e.remote_address,e.source_ip,e.path].join(' ').toLowerCase();
-      if (!haystack.includes(search)) return false;
-    }
-    return true;
-  });
-
-  const rows = filtered.map(e => {
-    const etype = e.event_type || e.source || 'default';
-    const meta  = TL_ICONS[etype] || TL_ICONS.default;
-    let desc = '', detail_parts = [];
-
-    switch(etype) {
-      case 'process_creation':
-      case 'suspicious_process':
-      case 'usb_execution':
-        desc = e.process_name || e.path?.split('\\').pop() || '(process)';
-        if (e.command_line) detail_parts.push('cmd: ' + e.command_line.substring(0,200));
-        if (e.user)         detail_parts.push('user: ' + e.user);
-        if (e.pid)          detail_parts.push('PID: ' + e.pid);
-        if (e.verdict)      detail_parts.push('verdict: ' + e.verdict);
-        break;
-      case 'logon':
-      case 'logon_failure':
-      case 'logoff':
-        desc = e.user || '(user)';
-        if (e.logon_type)  detail_parts.push('type: ' + e.logon_type);
-        if (e.source_ip && e.source_ip !== '-') detail_parts.push('from: ' + e.source_ip);
-        break;
-      case 'service_installed':
-      case 'service_crash':
-        desc = e.threat_name || e.path?.split('\\').pop() || '(service)';
-        if (e.path)   detail_parts.push('file: ' + e.path);
-        if (e.user)   detail_parts.push('acct: ' + e.user);
-        break;
-      case 'threat_detected':
-      case 'threat_action':
-      case 'rule_match':
-        desc = e.threat_name || '(threat)';
-        if (e.severity)  detail_parts.push('sev: ' + e.severity);
-        if (e.action)    detail_parts.push('action: ' + e.action);
-        if (e.path)      detail_parts.push(e.path.substring(0,120));
-        break;
-      case 'network_connection':
-        desc = `${e.process_name || '?'} → ${e.remote_address}:${e.remote_port}`;
-        if (e.local_address) detail_parts.push('local: ' + e.local_address + ':' + (e.local_port||''));
-        break;
-      case 'task_created':
-      case 'task_modified':
-        desc = e.threat_name || '(task)';
-        if (e.user) detail_parts.push('by: ' + e.user);
-        break;
-      default:
-        desc = e.threat_name || e.process_name || e.path || '(event)';
-        if (e.action) detail_parts.push(e.action);
-    }
-
-    const detail_str = detail_parts.join(' | ');
-    return `<div class="timeline-item">
-      <div class="timeline-dot ${meta.cls}" title="${etype}"></div>
-      <div class="timeline-content">
-        <div class="timeline-time">
-          <span style="background:var(--surface2);padding:1px 6px;border-radius:4px;
-                       font-size:10px;color:var(--muted);margin-right:6px;">${meta.icon} ${meta.label}</span>
-          ${fmtTS(e.time)}
-        </div>
-        <div class="timeline-event">${desc}</div>
-        ${detail_str ? `<div class="timeline-detail">${detail_str}</div>` : ''}
-      </div>
-    </div>`;
-  }).join('');
-
-  el.innerHTML = filterBar + (filtered.length
-    ? rows
-    : '<div style="color:var(--muted);padding:16px 0;font-size:13px;">No events match the current filter.</div>');
-}
-
-// Sub-tab switching (device modal)
-document.querySelectorAll('.sub-tab').forEach(tab => {
-  tab.addEventListener('click', () => {
-    const parent = tab.closest('.modal-body');
-    parent.querySelectorAll('.sub-tab').forEach(t => t.classList.remove('active'));
-    parent.querySelectorAll('.sub-panel').forEach(p => p.classList.remove('active'));
-    tab.classList.add('active');
-    parent.querySelector('#sub-' + tab.dataset.sub).classList.add('active');
-  });
-});
-
-function closeDeviceModal() { document.getElementById('device-modal').style.display='none'; currentDevice=null; }
-function closeModal(e) { if (e.target.classList.contains('modal-overlay')) { e.target.style.display='none'; currentDevice=null; } }
-
-// ---------------------------------------------------------------- ALERTS
-async function loadAlerts() {
-  const res = await api('/api/alerts');
-  if (!res.ok) return;
-  const data = await res.json();
-  allAlerts = data.alerts || [];
-  // Populate site filter
-  const sites = [...new Set(allAlerts.map(a => a.site_name).filter(Boolean))];
-  const sf = document.getElementById('alert-site-filter');
-  const cur = sf.value;
-  sf.innerHTML = '<option value="">All sites</option>' + sites.map(s => `<option${s===cur?' selected':''}>${s}</option>`).join('');
-  renderAlerts();
-}
-
-function renderAlerts() {
-  const search   = document.getElementById('alert-search').value.toLowerCase();
-  const statusF  = document.getElementById('alert-status-filter').value;
-  const sevF     = document.getElementById('alert-severity-filter').value;
-  const siteF    = document.getElementById('alert-site-filter').value;
-  const groupBy  = document.getElementById('alert-group-by').value;
-
-  let filtered = allAlerts.filter(a => {
-    if (statusF && a.status !== statusF) return false;
-    if (sevF && (a.severity||'').toUpperCase() !== sevF) return false;
-    if (siteF && a.site_name !== siteF) return false;
-    if (search && !(a.threat_name||'').toLowerCase().includes(search) && !(a.hostname||'').toLowerCase().includes(search)) return false;
-    return true;
-  });
-
-  const el = document.getElementById('alerts-list');
-  if (!filtered.length) { el.innerHTML = '<div class="empty">No alerts match the current filters</div>'; return; }
-
-  if (groupBy === 'none') {
-    el.innerHTML = filtered.map(a => alertCard(a)).join('');
-    return;
-  }
-  const groups = {};
-  filtered.forEach(a => {
-    const key = groupBy === 'device' ? `${a.site_name}/${a.hostname}` : (a.threat_name||'Unknown');
-    if (!groups[key]) groups[key] = [];
-    groups[key].push(a);
-  });
-  el.innerHTML = Object.entries(groups).map(([key, items]) => `
-    <div style="margin-bottom:20px;">
-      <h3 style="font-size:13px;color:var(--muted);margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid var(--border);">
-        ${groupBy === 'device' ? '&#x1F4BB; ' : '&#x26A0; '}${key}
-        <span style="background:var(--surface2);color:var(--muted);font-size:11px;padding:2px 7px;border-radius:10px;margin-left:6px;">${items.length}</span>
-      </h3>
-      ${items.map(alertCard).join('')}
-    </div>`).join('');
-}
-
-function alertCard(a) {
-  const sev = (a.severity||'').toLowerCase();
-  return `<div class="alert-card severity-${sev}" onclick='openAlertDetail(${JSON.stringify(JSON.stringify(a))})'>
-    <div style="display:flex;justify-content:space-between;align-items:flex-start;">
-      <div class="alert-title">${a.threat_name||'Unknown threat'}</div>
-      <div style="display:flex;gap:6px;align-items:center;">${statusBadge(a.status||'New')}${severityBadge(a.severity)}</div>
-    </div>
-    <div class="alert-meta">
-      <span>&#x1F4BB; ${a.hostname||'?'}</span>
-      <span>&#x1F3F7; ${a.site_name||'?'}</span>
-      <span>${fmtTS(a.created_at)}</span>
-      ${a.action ? `<span>Action: ${a.action}</span>` : ''}
-    </div>
-  </div>`;
-}
-
-['alert-search','alert-status-filter','alert-severity-filter','alert-site-filter','alert-group-by'].forEach(id =>
-  document.getElementById(id).addEventListener('change', renderAlerts));
-document.getElementById('alert-search').addEventListener('input', renderAlerts);
-
-const SRC_LABELS = {
-  defender:             { icon: '&#x1F6E1;', label: 'Windows Defender',          color: 'var(--blue)' },
-  playbook:             { icon: '&#x1F4CB;', label: 'Playbook Rule (WMI)',        color: 'var(--amber)' },
-  playbook_via_defender:{ icon: '&#x1F517;', label: 'Playbook Rule (via Defender)', color: 'var(--purple)' },
-  unknown:              { icon: '&#x2753;',  label: 'Unknown',                    color: 'var(--muted)' },
-};
-
-async function openAlertDetail(jsonStr) {
-  const a = JSON.parse(jsonStr);
-  document.getElementById('alert-modal-title').textContent = a.threat_name || 'Alert Detail';
-  document.getElementById('alert-modal').style.display = 'flex';
-
-  // Show skeleton immediately while context loads
-  document.getElementById('alert-modal-body').innerHTML = renderAlertBasic(a) +
-    '<div style="color:var(--muted);font-size:12px;margin-top:16px;">Loading related events...</div>';
-
-  // Fetch full context (timeline events, sibling alerts, rule details)
-  try {
-    const qs = a.site_name && a.hostname
-      ? `?site_name=${encodeURIComponent(a.site_name)}&hostname=${encodeURIComponent(a.hostname)}`
-      : '';
-    const res = await api(`/api/alerts/${encodeURIComponent(a.id)}/context${qs}`);
-    if (res.ok) {
-      const ctx = await res.json();
-      document.getElementById('alert-modal-body').innerHTML =
-        renderAlertFull(ctx.alert || a, ctx);
-      return;
-    }
-  } catch(e) {}
-  // Fallback: show basic without context
-  document.getElementById('alert-modal-body').innerHTML = renderAlertBasic(a);
-}
-
-function renderAlertBasic(a) {
-  const src = SRC_LABELS[a.source] || SRC_LABELS.unknown;
-  return `
-    <div class="prop-grid" style="margin-bottom:14px;">
-      <div class="prop"><div class="prop-label">Status</div><div class="prop-value">${statusBadge(a.status||'New')}</div></div>
-      <div class="prop"><div class="prop-label">Severity</div><div class="prop-value">${severityBadge(a.severity)}</div></div>
-      <div class="prop"><div class="prop-label">Source</div><div class="prop-value" style="font-size:13px;color:${src.color}">${src.icon} ${src.label}</div></div>
-      <div class="prop"><div class="prop-label">Device</div><div class="prop-value" style="font-size:13px;">${a.hostname||'-'}</div></div>
-      <div class="prop"><div class="prop-label">Site</div><div class="prop-value" style="font-size:13px;">${a.site_name||'-'}</div></div>
-      <div class="prop"><div class="prop-label">Detected</div><div class="prop-value" style="font-size:12px;">${fmtTS(a.detected_at||a.time)||'-'}</div></div>
-      ${a.process_name ? `<div class="prop"><div class="prop-label">Process</div><div class="prop-value" style="font-size:12px;font-family:monospace;">${a.process_name}</div></div>` : ''}
-      ${a.action ? `<div class="prop"><div class="prop-label">Action</div><div class="prop-value" style="font-size:13px;">${a.action}</div></div>` : ''}
-    </div>
-    ${a.command_line ? `<div class="prop" style="margin-bottom:10px;">
-      <div class="prop-label">Command Line</div>
-      <div style="font-size:11px;font-family:monospace;word-break:break-all;background:var(--bg);padding:8px;border-radius:6px;margin-top:4px;">${a.command_line.substring(0,500)}</div>
-    </div>` : ''}
-    ${renderAlertActions(a)}`;
-}
-
-function renderAlertFull(a, ctx) {
-  const src = SRC_LABELS[a.source] || SRC_LABELS.unknown;
-  const related = ctx.related_events || [];
-  const siblings = ctx.sibling_alerts || [];
-  const rule = ctx.rule_detail;
-
-  // Timeline events section
-  const tlHtml = related.length === 0
-    ? '<div style="color:var(--muted);font-size:12px;padding:8px 0;">No events in this time window yet — timeline populates every 30 min.</div>'
-    : related.map(e => {
-        const ahead = e._delta_secs > 0 ? '+' + e._delta_secs + 's' : e._delta_secs + 's';
-        const etype = e.event_type || e.source || 'event';
-        return `<div style="display:flex;gap:10px;padding:6px 0;border-bottom:1px solid rgba(48,54,61,.4);">
-          <span style="width:52px;flex-shrink:0;font-size:10px;color:${e._delta_secs < 0 ? 'var(--muted)' : 'var(--amber)'};font-family:monospace;padding-top:2px;">${ahead}</span>
-          <div>
-            <div style="font-size:12px;font-weight:500;">${e.process_name||e.threat_name||e.user||'(event)'} <span style="color:var(--muted);font-size:10px;">[${etype}]</span></div>
-            ${e.command_line ? `<div style="font-size:10px;color:var(--muted);font-family:monospace;">${e.command_line.substring(0,120)}</div>` : ''}
-          </div>
-        </div>`;
-      }).join('');
-
-  // Rule detail section
-  const ruleHtml = rule
-    ? `<div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:12px;margin-top:12px;">
-        <div style="font-size:12px;font-weight:600;margin-bottom:8px;color:var(--purple);">&#x1F4CB; Matched Detection Rule</div>
-        <div class="prop-grid" style="gap:8px;">
-          <div><div class="prop-label">Rule Name</div><div style="font-size:13px;">${rule.name||'-'}</div></div>
-          <div><div class="prop-label">MITRE Tactic</div><div style="font-size:12px;color:var(--muted);">${rule.mitre_tactic||'-'}</div></div>
-        </div>
-        <div style="margin-top:8px;"><div class="prop-label">Actions Triggered</div>
-          <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;">
-            ${(rule.actions||[]).map(ac => `<span class="badge badge-amber">${ac}</span>`).join('')}
-          </div>
-        </div>
-      </div>`
-    : (a.rule_name ? `<div style="background:var(--surface2);border-radius:8px;padding:10px;margin-top:10px;font-size:12px;color:var(--purple);">&#x1F4CB; Rule: <strong>${a.rule_name}</strong>${a.defender_threat ? ` (triggered via Defender detection: ${a.defender_threat})` : ''}</div>` : '');
-
-  // Sibling alerts section
-  const sibHtml = siblings.length
-    ? `<div style="margin-top:14px;">
-        <div style="font-size:12px;font-weight:600;margin-bottom:8px;color:var(--amber);">&#x26A0; ${siblings.length} related alert(s) on this device in the same window</div>
-        ${siblings.map(s => `<div style="display:flex;justify-content:space-between;align-items:center;padding:5px 0;font-size:12px;border-bottom:1px solid rgba(48,54,61,.3);">
-          <span>${s.threat_name||'Unknown'}</span>
-          ${severityBadge(s.severity)}
-        </div>`).join('')}
-      </div>` : '';
-
-  return `
-    <div class="prop-grid" style="margin-bottom:14px;">
-      <div class="prop"><div class="prop-label">Status</div><div class="prop-value">${statusBadge(a.status||'New')}</div></div>
-      <div class="prop"><div class="prop-label">Severity</div><div class="prop-value">${severityBadge(a.severity)}</div></div>
-      <div class="prop"><div class="prop-label">Source</div><div class="prop-value" style="font-size:13px;color:${src.color}">${src.icon} ${src.label}</div></div>
-      <div class="prop"><div class="prop-label">Device</div><div class="prop-value" style="font-size:13px;">${a.hostname||'-'}</div></div>
-      <div class="prop"><div class="prop-label">Site</div><div class="prop-value" style="font-size:13px;">${a.site_name||'-'}</div></div>
-      <div class="prop"><div class="prop-label">Detected</div><div class="prop-value" style="font-size:12px;">${fmtTS(a.detected_at||a.time)||'-'}</div></div>
-      ${a.process_name ? `<div class="prop"><div class="prop-label">Process</div><div class="prop-value" style="font-size:12px;font-family:monospace;">${a.process_name}</div></div>` : ''}
-      ${a.user ? `<div class="prop"><div class="prop-label">User</div><div class="prop-value" style="font-size:12px;">${a.user}</div></div>` : ''}
-      ${a.category ? `<div class="prop"><div class="prop-label">Category</div><div class="prop-value" style="font-size:12px;">${a.category}</div></div>` : ''}
-      ${a.action ? `<div class="prop"><div class="prop-label">Action</div><div class="prop-value" style="font-size:13px;">${a.action}</div></div>` : ''}
-    </div>
-    ${a.command_line ? `<div class="prop" style="margin-bottom:10px;">
-      <div class="prop-label">Command Line / Path</div>
-      <div style="font-size:11px;font-family:monospace;word-break:break-all;background:var(--bg);padding:8px;border-radius:6px;margin-top:4px;">${a.command_line.substring(0,600)}</div>
-    </div>` : ''}
-    ${a.mitre_tactic ? `<div style="margin-bottom:10px;"><span class="badge badge-blue">MITRE: ${a.mitre_tactic}</span></div>` : ''}
-    ${a.notes ? `<div class="prop" style="margin-bottom:10px;"><div class="prop-label">Notes</div><div style="font-size:13px;">${a.notes}</div></div>` : ''}
-    ${ruleHtml}
-    ${sibHtml}
-    <div style="margin-top:16px;">
-      <div style="font-size:12px;font-weight:600;margin-bottom:8px;">
-        &#x23F3; Related Events (${ctx.window_minutes}-min window around detection)
-      </div>
-      <div style="max-height:200px;overflow-y:auto;">${tlHtml}</div>
-    </div>
-    ${renderAlertActions(a)}`;
-}
-
-function renderAlertActions(a) {
-  return `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:16px;padding-top:12px;border-top:1px solid var(--border);">
-    <button class="btn btn-primary"  onclick="updateAlertStatus('${a.id}','Open')">Mark Open</button>
-    <button class="btn btn-success"  onclick="updateAlertStatus('${a.id}','Closed')">Mark Closed</button>
-    <button class="btn btn-ghost"    onclick="updateAlertStatus('${a.id}','New')">Mark New</button>
-    ${a.hostname && a.site_name ? `<button class="btn btn-ghost" onclick="openDeviceDetail('${escAttr(a.site_name)}','${escAttr(a.hostname)}')">View Device</button>` : ''}
-  </div>`;
-}
-
-async function updateAlertStatus(id, status) {
-  if (!getAdminKey()) return;
-  const res = await api(`/api/alerts/${id}`, { method: 'PATCH', body: JSON.stringify({ status }) });
-  if (res.ok) {
-    document.getElementById('alert-modal').style.display = 'none';
-    await loadAlerts();
-  } else {
-    const d = await res.json().catch(()=>({detail:'Error'}));
-    alert('Failed: ' + d.detail);
+  const body=document.getElementById('ab-body');
+  if(!f.length){body.innerHTML='<div class="empty">No alerts match filters</div>';return;}
+  const sevCol={'critical':'#ef4444','severe':'#f97316','high':'#f59e0b','medium':'#3b82f6','low':'#64748b'};
+  const aRow=a=>{const bc=sevCol[(a.severity||'').toLowerCase()]||'#64748b';const ch=_selA.has(a.id);
+    return `<tr class="cr ${ch?'sel':''}" onclick='oA(${JSON.stringify(JSON.stringify(a))})'>
+${cA?`<td onclick="event.stopPropagation()"><input type="checkbox" ${ch?'checked':''} style="accent-color:var(--blue);width:14px;height:14px" onchange="togAS('${eA(a.id)}',this.checked)"></td>`:''}
+<td><div style="width:3px;height:32px;border-radius:2px;background:${bc}"></div></td>
+<td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><strong>${esc(a.threat_name||'Unknown')}</strong></td>
+<td style="font-size:12px">${esc(a.hostname||'-')} <span style="color:var(--muted)">${esc(a.site_name||'')}</span></td>
+<td>${sI(a.source)} <span style="font-size:11px;color:var(--muted)">${esc(a.source||'?')}</span></td>
+<td><span class="badge ${sC(a.severity)}">${esc(a.severity||'?')}</span></td>
+<td><span class="badge ${stC(a.status||'New')}">${a.status||'New'}</span></td>
+<td style="font-size:11px;white-space:nowrap">${fmtAge(a.detected_at||a.time)}</td></tr>`;};
+  const thRow=`<tr>${cA?'<th style="width:36px">':''}<th></th><th>Threat</th><th>Device</th><th>Source</th><th>Severity</th><th>Status</th><th>Detected</th></tr>`;
+  if(_aG==='none'){
+    body.innerHTML=`<div class="table-wrap"><table><thead>${thRow}</thead><tbody>${f.map(aRow).join('')}</tbody></table></div>`;
+  }else{
+    const grps={};f.forEach(a=>{const k=_aG==='device'?`${a.site_name}/${a.hostname}`:(a.threat_name||'Unknown');(grps[k]=grps[k]||[]).push(a);});
+    body.innerHTML=Object.entries(grps).map(([k,items])=>`<div style="margin-bottom:16px">
+<div class="sec-title">${_aG==='device'?'&#x1F4BB; ':'&#x26A0; '}${esc(k)} <span class="badge b-muted">${items.length}</span></div>
+<div class="table-wrap"><table><thead>${thRow}</thead><tbody>${items.map(aRow).join('')}</tbody></table></div></div>`).join('');
   }
 }
 
-// ---------------------------------------------------------------- ENFORCEMENT
-function makeToggle(id, label, desc, checked) {
-  return `<div class="form-row">
-    <div><div class="form-label">${label}</div><div class="form-desc">${desc}</div></div>
-    <label class="toggle"><input type="checkbox" id="${id}" ${checked?'checked':''}><span class="toggle-slider"></span></label>
-  </div>`;
+function togAS(id,checked){if(checked)_selA.add(id);else _selA.delete(id);renderAlerts(document.getElementById('content'));}
+function togSelAll(){if(_selA.size===_A.length)_selA.clear();else _A.forEach(a=>_selA.add(a.id));renderAlerts(document.getElementById('content'));}
+async function bulkUpd(status){
+  if(!_selA.size)return;
+  const r=await api('/api/alerts/bulk',{method:'POST',body:JSON.stringify({ids:[..._selA],status})});
+  if(r.ok){_selA.clear();const am=await api('/api/alerts');if(am.ok){const d=await am.json();_A=d.alerts||[];}renderAlerts(document.getElementById('content'));}
 }
 
-const POLICY_FIELDS = [
-  { id:'enforce',         label:'Enable Enforcement', desc:'Active blocking (vs audit-only)' },
-  { id:'block_usb',       label:'USB Execution Blocking', desc:'Block executables launched from removable drives' },
-  { id:'block_processes', label:'Process Hash Blocking', desc:'Kill processes matching the threat blocklist' },
-  { id:'dns_enforce',     label:'Force Protective DNS', desc:'Override DNS to Cloudflare for Families' },
-  { id:'auto_contain',    label:'Auto-Containment on CRITICAL', desc:'Isolate host when a CRITICAL threat is detected' },
-];
-
-let exemptions = { global: [], site: {}, machine: {} };
-
-function renderPolicyForm(containerId, policyData, exemptionList) {
-  const el = document.getElementById(containerId);
-  el.innerHTML = `
-    <h3>Policy Settings</h3>
-    ${POLICY_FIELDS.map(f => makeToggle(containerId+'_'+f.id, f.label, f.desc, !!(policyData||{})[f.id])).join('')}
-    <div style="margin-top:16px;"><h4 style="font-size:13px;color:var(--muted);margin-bottom:8px;">Exemptions (by hostname or application name)</h4>
-    <div class="exemption-list" id="${containerId}_exemptions">
-      ${(exemptionList||[]).map((e,i) => `<div class="exemption-item">${e}<button class="exemption-remove" onclick="removeExemption('${containerId}',${i})">&#x2212;</button></div>`).join('')}
-    </div>
-    <div class="add-exemption">
-      <input id="${containerId}_new_exemption" placeholder="e.g. DESKTOP-XYZ123 or notepad.exe">
-      <button class="btn btn-ghost" onclick="addExemption('${containerId}')">Add</button>
-    </div></div>`;
+async function oA(js){
+  const a=JSON.parse(js);
+  document.getElementById('am-t').textContent=a.threat_name||'Alert';
+  document.getElementById('am').style.display='flex';
+  document.getElementById('am-b').innerHTML=renderAB(a)+'<div style="color:var(--muted);font-size:11px;margin-top:10px">Loading context...</div>';
+  try{
+    const qs=a.site_name&&a.hostname?`?site_name=${encodeURIComponent(a.site_name)}&hostname=${encodeURIComponent(a.hostname)}`:'';
+    const r=await api(`/api/alerts/${encodeURIComponent(a.id)}/context${qs}`);
+    if(r.ok){const ctx=await r.json();document.getElementById('am-b').innerHTML=renderAF(ctx.alert||a,ctx);}
+  }catch(ex){}
 }
 
-function readPolicyForm(containerId) {
-  const policy = {};
-  POLICY_FIELDS.forEach(f => {
-    const el = document.getElementById(containerId+'_'+f.id);
-    if (el) policy[f.id] = el.checked;
-  });
-  return policy;
+function renderAB(a){
+  const cA=_user?.perms?.includes('alerts');
+  return `<div class="grid2" style="margin-bottom:14px">
+<div class="prop"><div class="pl">Status</div><div class="pv"><span class="badge ${stC(a.status||'New')}">${a.status||'New'}</span></div></div>
+<div class="prop"><div class="pl">Severity</div><div class="pv"><span class="badge ${sC(a.severity)}">${a.severity||'?'}</span></div></div>
+<div class="prop"><div class="pl">Source</div><div class="pv" style="font-size:13px">${sI(a.source)} ${esc(a.source||'?')}</div></div>
+<div class="prop"><div class="pl">Device</div><div class="pv" style="font-size:13px">${esc(a.hostname||'-')}</div></div>
+<div class="prop"><div class="pl">Site</div><div class="pv" style="font-size:13px">${esc(a.site_name||'-')}</div></div>
+<div class="prop"><div class="pl">Detected</div><div class="pv" style="font-size:12px">${fmtTS(a.detected_at||a.time)}</div></div>
+${a.process_name?`<div class="prop"><div class="pl">Process</div><div class="pv" style="font-size:12px;font-family:monospace">${esc(a.process_name)}</div></div>`:''}
+${a.action?`<div class="prop"><div class="pl">Action</div><div class="pv" style="font-size:12px">${esc(a.action)}</div></div>`:''}
+</div>
+${a.command_line?`<div class="prop" style="margin-bottom:12px"><div class="pl">Command Line</div><div style="font-size:11px;font-family:monospace;word-break:break-all;background:var(--bg);padding:8px;border-radius:6px;margin-top:4px">${esc(a.command_line.substring(0,600))}</div></div>`:''}
+${cA?`<div class="btn-row" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
+<button class="btn btn-p" onclick="updAS('${eA(a.id)}','Open')">Mark Open</button>
+<button class="btn btn-s" onclick="updAS('${eA(a.id)}','Closed')">Mark Closed</button>
+<button class="btn btn-g" onclick="updAS('${eA(a.id)}','New')">Mark New</button>
+${a.hostname&&a.site_name?`<button class="btn btn-g" onclick="openDev('${eA(a.site_name)}','${eA(a.hostname)}')">View Device</button>`:''}
+<button class="btn btn-pu" onclick="aiAnalyze('${eA(a.id)}')" id="ai-btn-${eA(a.id)}">&#x1F916; Analyze with AI</button>
+</div><div id="ai-res-${eA(a.id)}"></div>`:''}`;
 }
 
-function addExemption(containerId) {
-  const input = document.getElementById(containerId+'_new_exemption');
-  const val = input.value.trim();
-  if (!val) return;
-  const list = document.getElementById(containerId+'_exemptions');
-  const idx = list.children.length;
-  list.insertAdjacentHTML('beforeend', `<div class="exemption-item">${val}<button class="exemption-remove" onclick="this.parentElement.remove()">&#x2212;</button></div>`);
-  input.value = '';
+function renderAF(a,ctx){
+  const rel=ctx.related_events||[];const sib=ctx.sibling_alerts||[];const rule=ctx.rule_detail;
+  const relH=rel.length===0?'<div style="color:var(--muted);font-size:12px;padding:8px">No events in this window</div>':rel.map(e=>{const dv=e._delta_secs||0;return `<div class="tl-item">
+<div class="tl-dot" style="background:${dv<0?'var(--muted)':'var(--amber)'}"></div>
+<div class="tl-cnt"><div class="tl-t"><span style="font-family:monospace;color:${dv<0?'var(--muted)':'var(--amber)'}">${dv>0?'+':''}${dv}s</span> ${fmtTS(e.time)}</div>
+<div class="tl-e">${esc(e.process_name||e.threat_name||e.user||'(event)')} <span style="font-size:10px;color:var(--muted)">[${e.event_type||e.source}]</span></div>
+${e.command_line?`<div class="tl-d">${esc(e.command_line.substring(0,120))}</div>`:''}</div></div>`;}).join('');
+  return renderAB(a)+`
+${rule?`<div style="background:rgba(168,85,247,.07);border:1px solid rgba(168,85,247,.2);border-radius:8px;padding:10px;margin-top:10px">
+<div style="font-size:11px;font-weight:600;color:var(--purple);margin-bottom:5px">&#x1F4CB; Matched Rule: ${esc(rule.name)}</div>
+<div style="font-size:11px;color:var(--muted2)">MITRE: ${esc(rule.mitre_tactic||'-')} | Actions: ${(rule.actions||[]).join(', ')}</div></div>`:''}
+${sib.length?`<div style="background:rgba(245,158,11,.07);border:1px solid rgba(245,158,11,.2);border-radius:8px;padding:10px;margin-top:10px">
+<div style="font-size:11px;font-weight:600;color:var(--amber);margin-bottom:5px">&#x26A0; ${sib.length} related alert(s) in same window</div>
+${sib.map(s=>`<div style="display:flex;justify-content:space-between;font-size:11px;padding:3px 0"><span>${esc(s.threat_name||'?')}</span><span class="badge ${sC(s.severity)}">${s.severity}</span></div>`).join('')}</div>`:''}
+<div style="margin-top:14px"><div class="sec-title">&#x23F3; Related Events (&plusmn;${ctx.window_minutes||10} min)</div>
+<div class="scroll" style="max-height:180px">${relH}</div></div>`;
 }
 
-function removeExemption(containerId, idx) {
-  const list = document.getElementById(containerId+'_exemptions');
-  list.children[idx]?.remove();
+async function aiAnalyze(id){
+  const btn=document.getElementById('ai-btn-'+id);const res=document.getElementById('ai-res-'+id);
+  if(btn){btn.disabled=true;btn.textContent='&#x1F916; Analyzing...';}
+  try{
+    const aRes=await api('/api/alerts');const alertD=aRes.ok?(await aRes.json()).alerts?.find(a=>a.id===id):null;
+    const ctxR=await api(`/api/alerts/${encodeURIComponent(id)}/context`);const ctx=ctxR.ok?await ctxR.json():{};
+    const r=await api('/api/ai/analyze-alert',{method:'POST',body:JSON.stringify({alert:alertD||{id},related_events:ctx.related_events||[]})});
+    if(r.status===503){if(res)res.innerHTML='<div style="color:var(--muted);font-size:12px;margin-top:8px">Set ANTHROPIC_API_KEY on Render to enable AI analysis.</div>';return;}
+    if(!r.ok){if(res)res.innerHTML='<div style="color:var(--red);font-size:12px;margin-top:8px">AI analysis failed.</div>';return;}
+    const d=await r.json();const an=d.analysis||{};
+    if(res)res.innerHTML=`<div class="ai-panel">
+<div style="font-size:11px;color:var(--purple);font-weight:600;margin-bottom:8px">&#x1F916; AI Incident Analysis</div>
+<div style="font-size:12px;line-height:1.6;color:var(--muted2)">
+${an.summary?`<p>${esc(an.summary)}</p>`:''}
+${an.attack_stage?`<p style="margin-top:8px"><strong>Attack Stage:</strong> ${esc(an.attack_stage)}</p>`:''}
+${an.severity_assessment?`<p style="margin-top:8px"><strong>Risk:</strong> ${esc(an.severity_assessment)}</p>`:''}
+${an.mitre_techniques?.length?`<p style="margin-top:8px"><strong>MITRE:</strong> ${an.mitre_techniques.map(t=>`<span class="badge b-purple" style="margin-right:4px">${esc(t)}</span>`).join('')}</p>`:''}
+${an.recommended_actions?.length?`<p style="margin-top:8px"><strong>Actions:</strong></p><ul style="margin:6px 0 6px 14px">${an.recommended_actions.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>`:''}
+${an.risk_to_business?`<p style="margin-top:8px"><strong>Business Risk:</strong> ${esc(an.risk_to_business)}</p>`:''}
+</div></div>`;
+  }catch(ex){if(res)res.innerHTML=`<div style="color:var(--red);font-size:12px;margin-top:8px">Error: ${ex}</div>`;}
+  finally{if(btn){btn.disabled=false;btn.textContent='&#x1F916; Analyze with AI';}}
 }
 
-function getExemptionsFromForm(containerId) {
-  const list = document.getElementById(containerId+'_exemptions');
-  return [...list.children].map(el => el.textContent.trim().replace('−','').trim());
+async function updAS(id,status){
+  const r=await api(`/api/alerts/${id}`,{method:'PATCH',body:JSON.stringify({status})});
+  if(r.ok){cM('am');const am=await api('/api/alerts');if(am.ok){const d=await am.json();_A=d.alerts||[];}renderAlerts(document.getElementById('content'));}
 }
 
-async function loadEnforcement() {
-  const res = await api('/api/enforcement');
-  if (!res.ok) { renderPolicyForm('global-form', {}, []); return; }
-  const data = await res.json();
-  const gp = data.global || {};
-  renderPolicyForm('global-form', gp, gp.exemptions || []);
-
-  const sites = [...new Set(allMachines.map(m => m.site_name))];
-  ['site-select','machine-site-select'].forEach(id => {
-    const el = document.getElementById(id);
-    if (!el.children.length) el.innerHTML = sites.map(s=>`<option>${s}</option>`).join('');
-  });
-  const curSite = document.getElementById('site-select').value || sites[0];
-  renderPolicyForm('site-form', data.sites?.[curSite] || {}, (data.sites?.[curSite]?.exemptions) || []);
-  updateMachineList(data.machines || {});
+async function renderApps(el){
+  el.innerHTML='<div class="empty">Loading...</div>';
+  try{
+    const r=await api('/api/apps/inventory');if(!r.ok){el.innerHTML='<div class="empty">Failed</div>';return;}
+    const{apps,total}=await r.json();const cA=_user?.perms?.includes('apps');
+    const fD=s=>s&&s.length>=8?`${s.slice(0,4)}-${s.slice(4,6)}-${s.slice(6,8)}`:'-';
+    el.innerHTML=`<div class="filter-bar">
+<input id="as" class="fi" placeholder="Search name or vendor..." style="width:200px">
+<select id="ar" class="fs"><option value="">All risks</option><option value="critical">Critical</option><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option></select>
+<select id="asa" class="fs"><option value="">All sanction</option><option value="1">Sanctioned</option><option value="0">Unsanctioned</option></select>
+<span style="margin-left:auto;font-size:12px;color:var(--muted)">${total} total</span>
+${cA?'<button class="btn btn-d" style="font-size:11px" onclick="blkUninst()">Uninstall All Critical</button>':''}
+</div>
+<div style="font-size:11px;color:var(--muted);margin-bottom:10px;background:rgba(59,130,246,.05);border:1px solid rgba(59,130,246,.15);border-radius:6px;padding:8px 12px">
+&#x2139;&#xFE0F; Risk: <strong>Critical</strong>=dangerous tools, <strong>High</strong>=outdated high-target software, <strong>Medium</strong>=network-facing, <strong>Low</strong>=standard.</div>
+<div class="table-wrap"><table><thead><tr><th>Name</th><th>Version</th><th>Vendor</th><th>Device</th><th>Install</th><th>Modified</th><th>Risk</th><th>OK?</th>${cA?'<th></th>':''}</tr></thead>
+<tbody id="at-body"></tbody></table></div>`;
+    const upd=()=>{
+      const sq=document.getElementById('as')?.value?.toLowerCase()||'';
+      const rv=document.getElementById('ar')?.value||'';
+      const sv=document.getElementById('asa')?.value||'';
+      const f=apps.filter(a=>{
+        if(sq&&!(a.name||'').toLowerCase().includes(sq)&&!(a.vendor||'').toLowerCase().includes(sq))return false;
+        if(rv&&(a.risk_level||'')!==rv)return false;
+        if(sv==='1'&&a.sanctioned===false)return false;
+        if(sv==='0'&&a.sanctioned!==false)return false;
+        return true;
+      });
+      document.getElementById('at-body').innerHTML=f.map(a=>`<tr>
+<td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(a.name||'')}">${esc(a.name||'-')}</td>
+<td style="font-size:11px;font-family:monospace">${esc(a.version||'-')}</td>
+<td style="font-size:11px;color:var(--muted);max-width:110px;overflow:hidden;text-overflow:ellipsis">${esc(a.vendor||'-')}</td>
+<td style="font-size:11px">${esc(a.hostname||'-')}</td>
+<td style="font-size:11px">${fD(a.install_date)}</td>
+<td style="font-size:11px;color:var(--muted)">${fD(a.modified_date)}</td>
+<td><span class="badge ${rC(a.risk_level)}">${(a.risk_level||'low').toUpperCase()}</span></td>
+<td>${a.sanctioned!==false?'<span style="color:var(--green)">&#x2713;</span>':'<span style="color:var(--red)">&#x2717;</span>'}</td>
+${cA?`<td class="iac">
+<button class="btn btn-g" style="font-size:10px;padding:3px 7px" onclick="sancApp('${eA(a.name)}',${a.sanctioned===false})">${a.sanctioned===false?'Sanction':'Unsanction'}</button>
+<button class="btn btn-d" style="font-size:10px;padding:3px 7px" onclick="uinstApp('${eA(a.site_name)}','${eA(a.hostname)}','${eA(a.name)}')">Uninstall</button>
+</td>`:''}
+</tr>`).join('')||'<tr><td colspan="9" class="empty">No results</td></tr>';
+    };
+    ['as','ar','asa'].forEach(id=>document.getElementById(id)?.addEventListener('input',upd));
+    ['as','ar','asa'].forEach(id=>document.getElementById(id)?.addEventListener('change',upd));
+    upd();
+  }catch(ex){el.innerHTML=`<div class="empty">Error: ${ex}</div>`;}
 }
 
-function updateMachineList(machineData) {
-  const site = document.getElementById('machine-site-select').value;
-  const machines = allMachines.filter(m => m.site_name === site).map(m => m.hostname);
-  const sel = document.getElementById('machine-select');
-  sel.innerHTML = machines.map(h => `<option>${h}</option>`).join('');
-  const hostname = sel.value;
-  const key = `${site}/${hostname}`;
-  const policy = machineData ? (machineData[key] || {}) : {};
-  renderPolicyForm('machine-form', policy, policy.exemptions || []);
+async function sancApp(name,st){
+  const note=!st?prompt(`Reason for unsanctioning "${name}":`)||'':'';
+  const r=await api('/api/apps/sanction',{method:'POST',body:JSON.stringify({app_name:name,sanctioned:st,note})});
+  if(r.ok)renderApps(document.getElementById('content'));
+  else{const d=await r.json().catch(()=>({detail:'Error'}));alert('Failed: '+d.detail);}
 }
-document.getElementById('machine-site-select').addEventListener('change', () => updateMachineList());
-document.getElementById('machine-select').addEventListener('change', () => updateMachineList());
-
-async function saveEnforcement(scope) {
-  if (!getAdminKey()) return;
-  let url, formId;
-  if (scope === 'global') { url = '/api/enforcement/global'; formId = 'global-form'; }
-  else if (scope === 'site') {
-    const site = document.getElementById('site-select').value;
-    url = `/api/enforcement/site/${encodeURIComponent(site)}`; formId = 'site-form';
-  } else {
-    const site = document.getElementById('machine-site-select').value;
-    const host = document.getElementById('machine-select').value;
-    url = `/api/enforcement/machine/${encodeURIComponent(site)}/${encodeURIComponent(host)}`; formId = 'machine-form';
-  }
-  const policy = readPolicyForm(formId);
-  policy.exemptions = getExemptionsFromForm(formId);
-  const res = await api(url, { method: 'POST', body: JSON.stringify(policy) });
-  if (res.ok) alert('Policy saved and queued on affected machines.');
-  else { const d = await res.json().catch(()=>({detail:'Error'})); alert('Failed: ' + (d.detail||'')); }
+async function uinstApp(site,host,name){
+  if(!confirm(`Uninstall "${name}" from ${host}?`))return;
+  const r=await api('/api/apps/uninstall',{method:'POST',body:JSON.stringify({site_name:site,hostname:host,app_name:name})});
+  if(r.ok)alert(`Uninstall queued for ${name}`);
+  else{const d=await r.json().catch(()=>({detail:'Error'}));alert('Failed: '+d.detail);}
+}
+async function blkUninst(){
+  if(!confirm('Uninstall ALL Critical risk apps from all devices?'))return;
+  const r=await api('/api/apps/uninstall-bulk',{method:'POST',body:JSON.stringify({risk_level:'critical'})});
+  if(r.ok){const d=await r.json();alert(`Queued ${d.count} uninstall(s).`);}
 }
 
-// Scope tab switching
-document.querySelectorAll('.scope-tab').forEach(tab => {
-  tab.addEventListener('click', () => {
-    document.querySelectorAll('.scope-tab').forEach(t => t.classList.remove('active'));
-    document.querySelectorAll('.enforce-scope').forEach(s => s.style.display='none');
-    tab.classList.add('active');
-    document.getElementById('enforce-' + tab.dataset.scope).style.display = 'block';
-  });
-});
+function renderEnforcement(el){el.innerHTML='<div class="card"><div class="card-header"><div class="card-title">Layered Enforcement</div></div><div class="empty" style="padding:24px">Use Live Status commands for immediate actions. Global/site/machine policy settings coming soon.</div></div>';}
 
-// ---------------------------------------------------------------- Init & refresh
-async function loadAll() {
-  await loadStatus();
-  await loadInventory();
-  await loadAlerts();
-  await loadEnforcement();
-  await loadRules();
-  await loadOverview();
-  document.getElementById('conn-dot').style.background = 'var(--green)';
+async function renderRules(el){
+  try{
+    const r=await api('/api/rules?scope=global');if(!r.ok){el.innerHTML='<div class="empty">Failed</div>';return;}
+    const{rules}=await r.json();_R=rules||[];const cC=_user?.perms?.includes('commands');
+    el.innerHTML=`<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+<div><h2 style="font-size:15px;font-weight:700;margin-bottom:3px">Detection Rules</h2>
+<p style="font-size:12px;color:var(--muted)">Rules push to endpoints within 5 min.</p></div>
+${cC?'<button class="btn btn-p" onclick="openRE(null)">+ New Rule</button>':''}
+</div>
+<div class="table-wrap"><table><thead><tr><th>Name</th><th>Severity</th><th>MITRE</th><th>Conditions</th><th>Actions</th><th>Status</th>${cC?'<th></th>':''}</tr></thead>
+<tbody>${_R.map(r=>{
+  const sc=r.severity==='CRITICAL'?'b-red':r.severity==='HIGH'?'b-amber':'b-blue';
+  const cds=Object.entries(r.conditions||{}).map(([k,v])=>`<div style="font-size:10px;color:var(--muted)">${k}: ${Array.isArray(v)?v.join(', '):v}</div>`).join('')||'<span style="color:var(--muted);font-size:11px">Any</span>';
+  const acs=(r.actions||[]).map(a=>({alert_only:'&#x1F514;',kill_process:'&#x274C;',isolate_host:'&#x1F512;',block_network:'&#x1F6AB;',collect_forensics:'&#x1F50D;'}[a]||a)).join(' ');
+  return `<tr><td><strong>${esc(r.name)}</strong>${r.description?`<div style="font-size:11px;color:var(--muted)">${esc(r.description)}</div>`:''}</td>
+<td><span class="badge ${sc}">${esc(r.severity||'?')}</span></td>
+<td style="font-size:11px;color:var(--muted)">${esc(r.mitre_tactic||'-')}</td>
+<td>${cds}</td><td style="font-size:16px">${acs}</td>
+<td><span class="badge ${r.enabled!==false?'b-green':'b-muted'}">${r.enabled!==false?'Active':'Off'}</span></td>
+${cC?`<td class="iac"><button class="btn btn-g" style="font-size:10px;padding:3px 8px" onclick='openRE(${JSON.stringify(JSON.stringify(r))})'>Edit</button><button class="btn btn-d" style="font-size:10px;padding:3px 8px" onclick="delRule('${eA(r.id)}')">Delete</button></td>`:''}
+</tr>`;}).join('')||'<tr><td colspan="7" class="empty">No rules yet</td></tr>'}</tbody></table></div>`;
+  }catch(ex){el.innerHTML=`<div class="empty">Error: ${ex}</div>`;}
 }
 
-loadAll();
-setInterval(loadAll, 30000);
-// ---------------------------------------------------------------- COMMAND RESULT POLLING
-async function pollCommandResult(site, hostname, maxWaitSecs=310) {
-  const started = Date.now();
-  while ((Date.now() - started) < maxWaitSecs * 1000) {
-    await new Promise(r => setTimeout(r, 6000));
-    try {
-      const res = await api(`/api/command_result/${encodeURIComponent(site)}/${encodeURIComponent(hostname)}`);
-      if (!res.ok) continue;
-      const data = await res.json();
-      if (data.status === 'pending') continue;
-      return data;
-    } catch(e) { continue; }
-  }
-  return null;
+const ACTS=[{id:'alert_only',l:'Alert Only',i:'&#x1F514;',d:'Log only'},{id:'kill_process',l:'Terminate Process',i:'&#x274C;',d:'Kill process'},{id:'isolate_host',l:'Isolate Endpoint',i:'&#x1F512;',d:'Block all network'},{id:'block_network',l:'Block Network',i:'&#x1F6AB;',d:'Block connection'},{id:'collect_forensics',l:'Collect Forensics',i:'&#x1F50D;',d:'Gather evidence'}];
+
+function openRE(js){
+  _editR=js?JSON.parse(js):null;const r=_editR;const c=r?.conditions||{};const a=new Set(r?.actions||['alert_only']);
+  document.getElementById('rm-t').textContent=r?'Edit Rule: '+r.name:'New Rule';
+  document.getElementById('rm-b').innerHTML=`<div class="fg">
+<div class="ff"><div class="fl">Rule Name *</div><input id="rn" class="fip" value="${esc(r?.name||'')}" placeholder="e.g. Office Macro Spawning Shell"></div>
+<div class="ff"><div class="fl">Severity</div><select id="rsev" class="fsel">${['LOW','MEDIUM','HIGH','CRITICAL'].map(s=>`<option ${s===r?.severity?'selected':''}>${s}</option>`).join('')}</select></div>
+<div class="ff"><div class="fl">MITRE Tactic</div><input id="rmt" class="fip" value="${esc(r?.mitre_tactic||'')}" placeholder="e.g. Execution (T1059)"></div>
+<div class="ff"><div class="fl">Status</div><select id="ren" class="fsel"><option value="true" ${r?.enabled!==false?'selected':''}>Active</option><option value="false" ${r?.enabled===false?'selected':''}>Disabled</option></select></div>
+<div class="ff full"><div class="fl">Description</div><input id="rd" class="fip" value="${esc(r?.description||'')}" placeholder="Optional"></div>
+</div>
+<div class="sec-title" style="margin:14px 0 10px">Conditions <span style="font-size:11px;font-weight:400;color:var(--muted)">(all must match)</span></div>
+<div class="fg">
+<div class="ff"><div class="fl">Parent Process</div><input id="rpp" class="fip" value="${esc((c.parent_process||[]).join(', '))}" placeholder="winword.exe"></div>
+<div class="ff"><div class="fl">Process Name</div><input id="rpn" class="fip" value="${esc((c.process_name||[]).join(', '))}" placeholder="cmd.exe, powershell.exe"></div>
+<div class="ff"><div class="fl">Command Line Contains</div><input id="rcl" class="fip" value="${esc((c.command_line_contains||[]).join(', '))}" placeholder="-encodedcommand"></div>
+<div class="ff"><div class="fl">IP Address Matches</div><input id="rip" class="fip" value="${esc((c.ip_address_matches||[]).join(', '))}" placeholder="192.168.1.100"></div>
+<div class="ff"><div class="fl">File Hash (SHA256)</div><input id="rhash" class="fip" value="${esc((c.file_hash_matches||[]).join(', '))}" placeholder="64-char hex"></div>
+<div class="ff"><div class="fl">Domain Contains</div><input id="rdom" class="fip" value="${esc((c.domain_contains||[]).join(', '))}" placeholder="pastebin.com"></div>
+</div>
+<div class="sec-title" style="margin:14px 0 10px">Actions</div>
+<div style="display:flex;flex-direction:column;gap:6px">
+${ACTS.map(ac=>`<label style="display:flex;align-items:center;gap:10px;background:var(--surface2);padding:10px;border-radius:8px;cursor:pointer;border:1px solid ${a.has(ac.id)?'var(--blue)':'var(--border)'}">
+<input type="checkbox" id="ra-${ac.id}" ${a.has(ac.id)?'checked':''} style="accent-color:var(--blue);width:14px;height:14px">
+<span style="font-size:16px">${ac.i}</span>
+<span><strong style="font-size:13px">${ac.l}</strong><br><span style="font-size:11px;color:var(--muted)">${ac.d}</span></span></label>`).join('')}
+</div>`;
+  document.getElementById('rm').style.display='flex';
 }
 
-// ---------------------------------------------------------------- RULES
-const ALLOWED_ACTIONS = [
-  { id:'alert_only',        label:'Alert Only',              icon:'\u{1F514}', color:'var(--blue)' },
-  { id:'kill_process',      label:'Terminate Process',       icon:'\u{274C}',  color:'var(--red)' },
-  { id:'isolate_host',      label:'Isolate Endpoint',        icon:'\u{1F512}', color:'var(--amber)' },
-  { id:'block_network',     label:'Block Network Connection',icon:'\u{1F6AB}', color:'var(--amber)' },
-  { id:'collect_forensics', label:'Collect Forensics Data',  icon:'\u{1F50D}', color:'var(--purple)' },
-];
-const ACTION_MAP = Object.fromEntries(ALLOWED_ACTIONS.map(a => [a.id, a]));
-
-let currentRuleScope = 'global';
-let allRules = [];
-
-// Scope tab switching for rules
-document.querySelectorAll('[data-rule-scope]').forEach(tab => {
-  tab.addEventListener('click', () => {
-    document.querySelectorAll('[data-rule-scope]').forEach(t => t.classList.remove('active'));
-    tab.classList.add('active');
-    currentRuleScope = tab.dataset.ruleScope;
-    const siteSel    = document.getElementById('rule-site-sel');
-    const machineSel = document.getElementById('rule-machine-sel');
-    siteSel.style.display    = currentRuleScope !== 'global' ? 'block' : 'none';
-    machineSel.style.display = currentRuleScope === 'machine' ? 'block' : 'none';
-    loadRules();
-  });
-});
-
-function getRuleScopeParams() {
-  const site    = document.getElementById('rule-site-sel').value || undefined;
-  const machine = document.getElementById('rule-machine-sel').value || undefined;
-  let qs = `scope=${currentRuleScope}`;
-  if (site)    qs += `&site=${encodeURIComponent(site)}`;
-  if (machine && currentRuleScope === 'machine') qs += `&hostname=${encodeURIComponent(machine)}`;
-  return qs;
+async function saveRule(){
+  const name=document.getElementById('rn')?.value?.trim();if(!name){alert('Name required');return;}
+  const csv=s=>s.split(',').map(x=>x.trim().toLowerCase()).filter(Boolean);
+  const conds={};
+  const pp=csv(document.getElementById('rpp')?.value||'');if(pp.length)conds.parent_process=pp;
+  const pn=csv(document.getElementById('rpn')?.value||'');if(pn.length)conds.process_name=pn;
+  const cl=csv(document.getElementById('rcl')?.value||'');if(cl.length)conds.command_line_contains=cl;
+  const ip=csv(document.getElementById('rip')?.value||'');if(ip.length)conds.ip_address_matches=ip;
+  const hh=document.getElementById('rhash')?.value.split(',').map(s=>s.trim()).filter(s=>s.length===64)||[];if(hh.length)conds.file_hash_matches=hh;
+  const dom=csv(document.getElementById('rdom')?.value||'');if(dom.length)conds.domain_contains=dom;
+  const actions=ACTS.filter(a=>document.getElementById('ra-'+a.id)?.checked).map(a=>a.id);
+  if(!actions.length)actions.push('alert_only');
+  const payload={name,description:document.getElementById('rd')?.value?.trim()||'',severity:document.getElementById('rsev')?.value||'MEDIUM',mitre_tactic:document.getElementById('rmt')?.value?.trim()||'',enabled:document.getElementById('ren')?.value!=='false',conditions:conds,actions};
+  const isN=!_editR;const url=isN?'/api/rules?scope=global':`/api/rules/${_editR.id}?scope=global`;
+  const r=await api(url,{method:isN?'POST':'PUT',body:JSON.stringify(payload)});
+  if(r.ok){cM('rm');renderRules(document.getElementById('content'));}
+  else{const d=await r.json().catch(()=>({detail:'Error'}));alert('Failed: '+d.detail);}
+}
+async function delRule(id){
+  if(!confirm('Delete rule?'))return;
+  const r=await api(`/api/rules/${id}?scope=global`,{method:'DELETE'});
+  if(r.ok)renderRules(document.getElementById('content'));
 }
 
-async function loadRules() {
-  // Populate site selector from known machines
-  const siteSel = document.getElementById('rule-site-sel');
-  if (!siteSel.children.length && allMachines.length) {
-    const sites = [...new Set(allMachines.map(m => m.site_name))];
-    siteSel.innerHTML = sites.map(s => `<option>${s}</option>`).join('');
-  }
-  const machineSel = document.getElementById('rule-machine-sel');
-  if (currentRuleScope === 'machine') {
-    const site = siteSel.value;
-    const machines = allMachines.filter(m => m.site_name === site).map(m => m.hostname);
-    machineSel.innerHTML = machines.map(h => `<option>${h}</option>`).join('');
-  }
-
-  const res = await api(`/api/rules?${getRuleScopeParams()}`);
-  if (!res.ok) return;
-  const data = await res.json();
-  allRules = data.rules || [];
-  renderRules();
+async function renderUsers(el){
+  try{
+    const r=await api('/api/users');if(!r.ok){el.innerHTML='<div class="empty">Access denied</div>';return;}
+    const{users}=await r.json();
+    el.innerHTML=`<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+<h2 style="font-size:15px;font-weight:700">User Management</h2><button class="btn btn-p" onclick="openUE(null)">+ Add User</button></div>
+<div class="card"><div class="table-wrap"><table><thead><tr><th>Username</th><th>Role</th><th>Email</th><th>Created</th><th></th></tr></thead>
+<tbody>${users.map(u=>`<tr>
+<td><strong>${esc(u.username)}</strong></td>
+<td><span class="badge ${u.role==='admin'?'b-red':u.role==='analyst'?'b-amber':'b-muted'}">${esc(u.role)}</span></td>
+<td style="font-size:12px;color:var(--muted)">${esc(u.email||'-')}</td>
+<td style="font-size:11px;color:var(--muted)">${fmtTS(u.created_at)}</td>
+<td class="iac"><button class="btn btn-g" style="font-size:11px" onclick='openUE(${JSON.stringify(JSON.stringify(u))})'>Edit</button>
+${u.username!==_user?.username?`<button class="btn btn-d" style="font-size:11px" onclick="delUser('${eA(u.username)}')">Delete</button>`:''}</td>
+</tr>`).join('')}</tbody></table></div></div>
+<div style="margin-top:14px;padding:12px;background:rgba(59,130,246,.05);border:1px solid rgba(59,130,246,.15);border-radius:8px;font-size:12px;color:var(--muted2)">
+<strong>Roles:</strong> Reader (view only) &middot; Analyst (view + manage alerts) &middot; Admin (full access + manage users, apps, commands, settings)</div>`;
+  }catch(ex){el.innerHTML=`<div class="empty">Error: ${ex}</div>`;}
 }
 
-function renderRules() {
-  const el = document.getElementById('rules-list');
-  if (!allRules.length) {
-    el.innerHTML = '<div class="empty">No rules in this scope. Click "+ New Rule" to create one.</div>'; return;
-  }
-  el.innerHTML = `<div class="scroll-table"><table>
-    <thead><tr>
-      <th>Name</th><th>Severity</th><th>MITRE Tactic</th>
-      <th>Conditions</th><th>Actions</th><th>Status</th><th></th>
-    </tr></thead>
-    <tbody>${allRules.map(r => ruleRow(r)).join('')}</tbody>
-  </table></div>`;
+function openUE(js){
+  _editU=js?JSON.parse(js):null;const u=_editU;
+  document.getElementById('um-t').textContent=u?'Edit: '+u.username:'New User';
+  document.getElementById('um-b').innerHTML=`<div style="display:flex;flex-direction:column;gap:12px">
+${!u?'<div class="ff"><div class="fl">Username</div><input id="uu" class="fip" placeholder="username"></div>':''}
+<div class="ff"><div class="fl">Email</div><input id="ue" class="fip" type="email" value="${esc(u?.email||'')}" placeholder="user@example.com"></div>
+<div class="ff"><div class="fl">Role</div><select id="ur" class="fsel">${['reader','analyst','admin'].map(r=>`<option value="${r}" ${r===(u?.role||'reader')?'selected':''}>${r.charAt(0).toUpperCase()+r.slice(1)}</option>`).join('')}</select></div>
+<div class="ff"><div class="fl">${u?'New Password (blank to keep)':'Password *'}</div><input id="upw" class="fip" type="password" placeholder="${u?'Leave blank':'New password'}"></div>
+</div>`;
+  document.getElementById('um').style.display='flex';
 }
 
-function ruleRow(r) {
-  const sevClass = r.severity === 'CRITICAL' ? 'badge-red' : r.severity === 'HIGH' ? 'badge-amber' : 'badge-blue';
-  const conds = Object.entries(r.conditions || {}).map(([k,v]) =>
-    `<span style="font-size:10px;color:var(--muted);">${k}: ${Array.isArray(v)?v.join(', '):v}</span>`
-  ).join('<br>') || '<span style="color:var(--muted);font-size:11px;">Any</span>';
-  const actions = (r.actions || []).map(a => {
-    const info = ACTION_MAP[a] || {label:a, icon:'?', color:'var(--muted)'};
-    return `<span title="${info.label}" style="margin-right:4px;font-size:14px;">${info.icon}</span>`;
-  }).join('');
-  const rid = escAttr(r.id);
-  return `<tr>
-    <td><strong>${r.name}</strong>${r.description?`<br><span style="font-size:11px;color:var(--muted);">${r.description}</span>`:''}</td>
-    <td><span class="badge ${sevClass}">${r.severity||'?'}</span></td>
-    <td style="font-size:12px;color:var(--muted);">${r.mitre_tactic||'-'}</td>
-    <td style="font-size:11px;">${conds}</td>
-    <td>${actions}</td>
-    <td><span class="badge ${r.enabled!==false?'badge-green':'badge-muted'}">${r.enabled!==false?'Active':'Disabled'}</span></td>
-    <td style="white-space:nowrap;">
-      <button class="btn btn-ghost" style="margin-right:4px;" onclick='openRuleEditor(${JSON.stringify(JSON.stringify(r))})'>Edit</button>
-      <button class="btn btn-danger" onclick="deleteRule('${rid}')">Delete</button>
-    </td>
-  </tr>`;
-}
-
-// ---------------------------------------------------------------- RULE EDITOR MODAL
-function openRuleEditor(jsonStr) {
-  const rule = jsonStr ? JSON.parse(jsonStr) : null;
-  const isNew = !rule;
-
-  // Build condition fields
-  const conds = rule?.conditions || {};
-  const actionsSet = new Set(rule?.actions || ['alert_only']);
-
-  const modal = document.createElement('div');
-  modal.className = 'modal-overlay';
-  modal.id = 'rule-editor-modal';
-  modal.innerHTML = `
-    <div class="modal" style="max-width:700px;" onclick="event.stopPropagation()">
-      <div class="modal-header">
-        <span class="modal-title">${isNew ? 'New Detection Rule' : 'Edit Rule: ' + rule.name}</span>
-        <button class="modal-close" onclick="document.getElementById('rule-editor-modal').remove()">&#x2715;</button>
-      </div>
-      <div class="modal-body">
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px;">
-          <div>
-            <div class="prop-label" style="margin-bottom:4px;">Rule Name *</div>
-            <input id="re-name" value="${escAttr(rule?.name||'')}" placeholder="e.g. Office Macro Spawning Shell"
-              style="width:100%;background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:8px 10px;border-radius:6px;font-size:13px;">
-          </div>
-          <div>
-            <div class="prop-label" style="margin-bottom:4px;">Severity</div>
-            <select id="re-severity" style="width:100%;background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:8px 10px;border-radius:6px;font-size:13px;">
-              ${['LOW','MEDIUM','HIGH','CRITICAL'].map(s=>`<option${s===rule?.severity?' selected':''}>${s}</option>`).join('')}
-            </select>
-          </div>
-          <div>
-            <div class="prop-label" style="margin-bottom:4px;">MITRE Tactic</div>
-            <input id="re-mitre" value="${escAttr(rule?.mitre_tactic||'')}" placeholder="e.g. Execution (T1059)"
-              style="width:100%;background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:8px 10px;border-radius:6px;font-size:13px;">
-          </div>
-          <div>
-            <div class="prop-label" style="margin-bottom:4px;">Status</div>
-            <select id="re-enabled" style="width:100%;background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:8px 10px;border-radius:6px;font-size:13px;">
-              <option value="true"${rule?.enabled!==false?' selected':''}>Active</option>
-              <option value="false"${rule?.enabled===false?' selected':''}>Disabled</option>
-            </select>
-          </div>
-        </div>
-        <div style="margin-bottom:4px;font-size:12px;color:var(--muted);">Description</div>
-        <input id="re-desc" value="${escAttr(rule?.description||'')}" placeholder="Optional description"
-          style="width:100%;background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:8px 10px;border-radius:6px;font-size:13px;margin-bottom:16px;">
-
-        <div style="font-size:14px;font-weight:600;margin-bottom:10px;">Conditions <span style="font-size:11px;font-weight:400;color:var(--muted);">(all specified conditions must match — leave blank to skip)</span></div>
-        <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:16px;">
-          ${condField('re-parent',   'Parent Process',          (conds.parent_process||[]).join(', '),          'e.g. winword.exe, excel.exe')}
-          ${condField('re-procname', 'Process Name',            (conds.process_name||[]).join(', '),            'e.g. cmd.exe, powershell.exe, certutil.exe')}
-          ${condField('re-cmdline',  'Command Line Contains',   (conds.command_line_contains||[]).join(', '),   'e.g. -encodedcommand, urlcache, -split')}
-          ${condField('re-ip',       'IP Address Matches',      (conds.ip_address_matches||[]).join(', '),      'e.g. 192.168.1.100, 10.0.0. (prefix match)')}
-          ${condField('re-hash',     'File Hash (SHA256)',      (conds.file_hash_matches||[]).join(', '),       'e.g. a1b2c3d4... (full SHA256, comma-separated)')}
-          ${condField('re-domain',   'Domain/URL Contains',     (conds.domain_contains||[]).join(', '),         'e.g. pastebin.com, evil.ru, c2-server')}
-        </div>
-
-        <div style="font-size:14px;font-weight:600;margin-bottom:10px;">Actions <span style="font-size:11px;font-weight:400;color:var(--muted);">(executed in order when rule matches)</span></div>
-        <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:20px;">
-          ${ALLOWED_ACTIONS.map(a => `
-            <label style="display:flex;align-items:center;gap:10px;background:var(--surface2);padding:10px;border-radius:8px;cursor:pointer;border:1px solid ${actionsSet.has(a.id)?'var(--accent)':'var(--border)'};">
-              <input type="checkbox" id="re-act-${a.id}" ${actionsSet.has(a.id)?'checked':''} style="width:14px;height:14px;accent-color:var(--blue);">
-              <span style="font-size:16px;">${a.icon}</span>
-              <span><strong style="color:${a.color};font-size:13px;">${a.label}</strong></span>
-            </label>`).join('')}
-        </div>
-
-        <div style="display:flex;gap:8px;justify-content:flex-end;">
-          <button class="btn btn-ghost" onclick="document.getElementById('rule-editor-modal').remove()">Cancel</button>
-          <button class="btn btn-primary" onclick="saveRule('${escAttr(rule?.id||'')}')">
-            ${isNew ? 'Create Rule' : 'Save Changes'}
-          </button>
-        </div>
-      </div>
-    </div>`;
-  modal.onclick = e => { if (e.target === modal) modal.remove(); };
-  document.body.appendChild(modal);
-}
-
-function condField(id, label, value, placeholder) {
-  return `<div>
-    <div class="prop-label" style="margin-bottom:4px;">${label} <span style="font-size:10px;color:var(--muted);">(comma-separated)</span></div>
-    <input id="${id}" value="${escAttr(value)}" placeholder="${placeholder}"
-      style="width:100%;background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:8px 10px;border-radius:6px;font-size:12px;font-family:monospace;">
-  </div>`;
-}
-
-function parseCSV(str) {
-  return str.split(',').map(s=>s.trim().toLowerCase()).filter(Boolean);
-}
-
-async function saveRule(existingId) {
-  if (!getAdminKey()) return;
-  const name = document.getElementById('re-name').value.trim();
-  if (!name) { alert('Rule name is required.'); return; }
-
-  const conditions = {};
-  const parent   = parseCSV(document.getElementById('re-parent').value);
-  const procname = parseCSV(document.getElementById('re-procname').value);
-  const cmdline  = parseCSV(document.getElementById('re-cmdline').value);
-  const ipaddrs  = parseCSV(document.getElementById('re-ip').value);
-  const hashes   = document.getElementById('re-hash').value.split(',').map(s=>s.trim()).filter(s=>s.length===64);
-  const domains  = parseCSV(document.getElementById('re-domain').value);
-  if (parent.length)   conditions.parent_process        = parent;
-  if (procname.length) conditions.process_name          = procname;
-  if (cmdline.length)  conditions.command_line_contains = cmdline;
-  if (ipaddrs.length)  conditions.ip_address_matches    = ipaddrs;
-  if (hashes.length)   conditions.file_hash_matches     = hashes;
-  if (domains.length)  conditions.domain_contains       = domains;
-
-  const actions = ALLOWED_ACTIONS
-    .filter(a => document.getElementById('re-act-'+a.id)?.checked)
-    .map(a => a.id);
-  if (!actions.length) actions.push('alert_only');
-
-  const payload = {
-    name,
-    description:  document.getElementById('re-desc').value.trim(),
-    severity:     document.getElementById('re-severity').value,
-    mitre_tactic: document.getElementById('re-mitre').value.trim(),
-    enabled:      document.getElementById('re-enabled').value === 'true',
-    conditions,
-    actions,
-  };
-
-  const qs = getRuleScopeParams();
-  const isNew = !existingId;
-  const url = isNew ? `/api/rules?${qs}` : `/api/rules/${existingId}?${qs}`;
-  const method = isNew ? 'POST' : 'PUT';
-
-  const res = await api(url, { method, body: JSON.stringify(payload) });
-  if (res.ok) {
-    document.getElementById('rule-editor-modal')?.remove();
-    await loadRules();
-    showToast(isNew ? 'Rule created and pushed to endpoints.' : 'Rule updated and pushed to endpoints.', 'green');
-  } else {
-    const d = await res.json().catch(()=>({detail:'Error'}));
-    alert('Failed: ' + (d.detail||'Unknown error'));
+async function saveUser(){
+  const body={role:document.getElementById('ur')?.value,email:document.getElementById('ue')?.value};
+  const pw=document.getElementById('upw')?.value;if(pw)body.password=pw;
+  if(_editU){
+    const r=await api(`/api/users/${_editU.username}`,{method:'PUT',body:JSON.stringify(body)});
+    if(r.ok){cM('um');renderUsers(document.getElementById('content'));}
+    else{const d=await r.json().catch(()=>({detail:'Error'}));alert('Failed: '+d.detail);}
+  }else{
+    const uname=document.getElementById('uu')?.value?.trim();if(!uname||!pw){alert('Username and password required');return;}
+    const r=await api('/api/users',{method:'POST',body:JSON.stringify({...body,username:uname,password:pw})});
+    if(r.ok){cM('um');renderUsers(document.getElementById('content'));}
+    else{const d=await r.json().catch(()=>({detail:'Error'}));alert('Failed: '+d.detail);}
   }
 }
 
-async function deleteRule(ruleId) {
-  if (!confirm('Delete this rule? It will be removed from all affected endpoints.')) return;
-  if (!getAdminKey()) return;
-  const res = await api(`/api/rules/${ruleId}?${getRuleScopeParams()}`, { method: 'DELETE' });
-  if (res.ok) { await loadRules(); showToast('Rule deleted.', 'red'); }
-  else { const d = await res.json().catch(()=>({detail:''})); alert('Failed: '+d.detail); }
+async function delUser(uname){
+  if(!confirm(`Delete user "${uname}"?`))return;
+  const r=await api(`/api/users/${uname}`,{method:'DELETE'});
+  if(r.ok)renderUsers(document.getElementById('content'));
 }
 
-// ---------------------------------------------------------------- TOAST
-function showToast(msg, color='green') {
-  const t = document.createElement('div');
-  t.textContent = msg;
-  t.style.cssText = `position:fixed;bottom:24px;right:24px;background:var(--surface);border:1px solid var(--border);
-    border-left:3px solid var(--${color});padding:10px 16px;border-radius:8px;font-size:13px;z-index:999;
-    box-shadow:0 4px 12px rgba(0,0,0,.4);max-width:400px;`;
-  document.body.appendChild(t);
-  setTimeout(()=>t.remove(), 4000);
+async function renderSettings(el){
+  const r=await api('/api/settings');const s=r.ok?await r.json():{};
+  el.innerHTML=`<div class="card" style="max-width:540px">
+<div class="card-header"><div class="card-title">Dashboard Settings</div></div>
+<div style="display:flex;flex-direction:column;gap:14px">
+<div class="ff"><div class="fl">Organisation Name</div><input id="so" class="fip" value="${esc(s.org_name||'')}" placeholder="Sunrise Pharmacy Group"></div>
+<div class="ff"><div class="fl">Offline Threshold (hours)</div><input id="soh" class="fip" type="number" min="1" value="${s.offline_threshold_hours||1}"><div style="font-size:11px;color:var(--muted);margin-top:3px">Hours before device shown as Offline.</div></div>
+<div class="ff"><div class="fl">Long-Offline Warning (days)</div><input id="sow" class="fip" type="number" min="1" value="${s.offline_days_warning||7}"><div style="font-size:11px;color:var(--muted);margin-top:3px">Days before flagged on Overview.</div></div>
+<div class="ff"><div class="fl">MTTD Target (minutes)</div><input id="sm" class="fip" type="number" min="1" value="${s.mttd_target_minutes||30}"><div style="font-size:11px;color:var(--muted);margin-top:3px">Bar is green when actual MTTD &le; this.</div></div>
+<div class="ff"><div class="fl">MTTR Target (minutes)</div><input id="smt" class="fip" type="number" min="1" value="${s.mttr_target_minutes||120}"><div style="font-size:11px;color:var(--muted);margin-top:3px">Bar is green when actual MTTR &le; this.</div></div>
+${_user?.role==='admin'?'<button class="btn btn-p" style="align-self:flex-start" onclick="saveSets()">Save Settings</button>':'<p style="font-size:12px;color:var(--muted)">Requires Admin role.</p>'}
+</div></div>`;
 }
 
-// ---------------------------------------------------------------- COMMAND STATUS WITH POLLING
-// Wrap the existing cmd() function to also poll for result
-const _origCmd = cmd;
-window.cmd = async function(site, hostname, command, btn) {
-  await _origCmd(site, hostname, command, btn);
-  const statusEl = btn.closest('.card')?.querySelector('.cmd-status');
-  if (!statusEl) return;
-  statusEl.textContent = 'Waiting for machine response (up to 5 min)...';
-  const result = await pollCommandResult(site, hostname);
-  if (!result) {
-    statusEl.textContent = 'No response received within 5 min. Check agent.log on the machine.';
-    return;
-  }
-  const icon = result.success ? '\u2705' : '\u274C';
-  statusEl.textContent = `${icon} ${result.detail?.substring(0,200) || (result.success?'Success':'Failed')}`;
-  statusEl.style.color = result.success ? 'var(--green)' : 'var(--red)';
-};
-
-// ================================================================ OVERVIEW
-let _overviewData = null;
-
-function navTo(panel) {
-  document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
-  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
-  const btn = document.querySelector(`.nav-btn[data-panel="${panel}"]`);
-  if (btn) btn.classList.add('active');
-  const el = document.getElementById('panel-' + panel);
-  if (el) el.classList.add('active');
+async function saveSets(){
+  const body={org_name:document.getElementById('so')?.value?.trim(),offline_threshold_hours:parseInt(document.getElementById('soh')?.value)||1,offline_days_warning:parseInt(document.getElementById('sow')?.value)||7,mttd_target_minutes:parseInt(document.getElementById('sm')?.value)||30,mttr_target_minutes:parseInt(document.getElementById('smt')?.value)||120};
+  const r=await api('/api/settings',{method:'PUT',body:JSON.stringify(body)});
+  if(r.ok){document.getElementById('org-name').textContent=body.org_name||'SME Security';alert('Saved!');}
+  else{const d=await r.json().catch(()=>({detail:'Error'}));alert('Failed: '+d.detail);}
 }
 
-function navToFiltered(panel, filter) {
-  navTo(panel);
-  if (panel === 'inventory') {
-    const f = document.getElementById('inv-status-filter');
-    if (f) { f.value = filter; renderInventory(); }
-  }
-}
-
-function navToFilteredAlerts(status) {
-  navTo('alerts');
-  const f = document.getElementById('alert-status-filter');
-  if (f) { f.value = status; renderAlerts(); }
-}
-
-function showLongOfflineModal() {
-  if (!_overviewData) return;
-  const lo = _overviewData.devices.long_offline || [];
-  const days = _overviewData.devices.warning_days;
-  document.getElementById('long-offline-modal-title').textContent =
-    `Devices Offline > ${days} day(s) (${lo.length})`;
-  if (!lo.length) {
-    document.getElementById('long-offline-modal-body').innerHTML =
-      '<div class="empty">No devices have been offline this long.</div>';
-  } else {
-    document.getElementById('long-offline-modal-body').innerHTML = lo.map(d => `
-      <div class="offline-device-row">
-        <div>
-          <strong>${d.hostname}</strong>
-          <span style="font-size:11px;color:var(--muted);margin-left:8px;">${d.site_name}</span>
-        </div>
-        <div style="text-align:right;">
-          <span class="badge badge-red">${d.offline_days} days offline</span>
-          <div style="font-size:11px;color:var(--muted);margin-top:2px;">${fmtTS(d.last_seen)}</div>
-        </div>
-      </div>`).join('');
-  }
-  document.getElementById('long-offline-modal').style.display = 'flex';
-}
-
-function fmtMinutes(mins) {
-  if (mins === null || mins === undefined) return 'N/A';
-  if (mins < 60) return mins.toFixed(0) + ' min';
-  return (mins / 60).toFixed(1) + ' hr';
-}
-
-function perfBarWidth(mins, goodThreshold) {
-  // 100% = good (fast), lower = slower
-  if (!mins || mins <= 0) return 0;
-  const ratio = Math.min(goodThreshold / mins, 1);
-  return Math.round(ratio * 100);
-}
-
-async function loadOverview() {
-  const res = await api('/api/overview');
-  if (!res.ok) return;
-  _overviewData = await res.json();
-
-  // Org name
-  const orgName = _overviewData.org_name || '';
-  if (orgName) document.getElementById('overview-org-name').textContent = orgName + ' — Security Operations';
-
-  // Device stats
-  document.getElementById('ov-online').textContent       = _overviewData.devices.online;
-  document.getElementById('ov-offline').textContent      = _overviewData.devices.offline;
-  document.getElementById('ov-long-offline').textContent = _overviewData.devices.long_offline.length;
-  document.getElementById('ov-total').textContent        = _overviewData.devices.total;
-  document.getElementById('ov-warning-days').textContent = _overviewData.devices.warning_days;
-
-  const sites = new Set();
-  (allDevices || []).forEach(d => sites.add(d.site_name));
-  document.getElementById('ov-sites-count').textContent = `Across ${sites.size || '-'} site(s)`;
-
-  // Long offline warning banner
-  const lo = _overviewData.devices.long_offline;
-  const warningEl = document.getElementById('ov-long-offline-warning');
-  if (lo.length > 0) {
-    warningEl.style.display = 'block';
-    warningEl.innerHTML = `<div class="offline-warning">
-      <strong>&#x26A0; ${lo.length} device(s) have been offline for more than ${_overviewData.devices.warning_days} days.</strong>
-      ${lo.slice(0,3).map(d => `<div class="offline-device-row" style="cursor:pointer;" onclick="openDeviceDetail('${escAttr(d.site_name)}','${escAttr(d.hostname)}')">
-        <span><strong>${d.hostname}</strong> <span style="color:var(--muted);font-size:11px;">${d.site_name}</span></span>
-        <span class="badge badge-red">${d.offline_days}d offline</span>
-      </div>`).join('')}
-      ${lo.length > 3 ? `<div style="font-size:12px;color:var(--muted);margin-top:6px;cursor:pointer;" onclick="showLongOfflineModal()">+ ${lo.length-3} more</div>` : ''}
-    </div>`;
-  } else {
-    warningEl.style.display = 'none';
-  }
-
-  // Alert stats
-  const al = _overviewData.alerts;
-  document.getElementById('ov-new-alerts').textContent      = al.new;
-  document.getElementById('ov-open-alerts').textContent     = al.open;
-  document.getElementById('ov-closed-alerts').textContent   = al.closed;
-  document.getElementById('ov-playbook-alerts').textContent = al.playbook;
-
-  // SOC performance
-  const soc = _overviewData.soc_performance;
-  document.getElementById('ov-soc-samples').textContent = soc.sample_count;
-  document.getElementById('ov-mttd').textContent        = fmtMinutes(soc.mttd_minutes);
-  document.getElementById('ov-mttr').textContent        = fmtMinutes(soc.mttr_minutes);
-  // Good MTTD target: 30 min; Good MTTR: 120 min
-  const mttdTarget = soc.mttd_target_minutes || 30;
-  const mttrTarget = soc.mttr_target_minutes || 120;
-  const mttdBar = document.getElementById('ov-mttd-bar');
-  const mttrBar = document.getElementById('ov-mttr-bar');
-  mttdBar.style.width = perfBarWidth(soc.mttd_minutes, mttdTarget) + '%';
-  mttrBar.style.width = perfBarWidth(soc.mttr_minutes, mttrTarget) + '%';
-  // Green when meeting target, amber when within 2x, red when worse
-  const mttdRatio = soc.mttd_minutes ? soc.mttd_minutes / mttdTarget : 0;
-  const mttrRatio = soc.mttr_minutes ? soc.mttr_minutes / mttrTarget : 0;
-  mttdBar.style.background = mttdRatio <= 1 ? 'var(--green)' : mttdRatio <= 2 ? 'var(--amber)' : 'var(--red)';
-  mttrBar.style.background = mttrRatio <= 1 ? 'var(--green)' : mttrRatio <= 2 ? 'var(--amber)' : 'var(--red)';
-  // Update stat card subtitles with target
-  document.querySelector('#ov-mttd').nextElementSibling.nextElementSibling.textContent =
-    `Target: ${fmtMinutes(mttdTarget)} | Avg: ${soc.mttd_minutes ? fmtMinutes(soc.mttd_minutes) : 'N/A'}`;
-  document.querySelector('#ov-mttr').nextElementSibling.nextElementSibling.textContent =
-    `Target: ${fmtMinutes(mttrTarget)} | Avg: ${soc.mttr_minutes ? fmtMinutes(soc.mttr_minutes) : 'N/A'}`;
-
-  // Recent alerts feed
-  const feed = _overviewData.recent_alerts || [];
-  const feedEl = document.getElementById('ov-recent-alerts');
-  if (!feed.length) {
-    feedEl.innerHTML = '<div class="empty" style="padding:24px 0;">No unresolved alerts.</div>';
-  } else {
-    feedEl.innerHTML = feed.map(a => {
-      const sev = (a.severity || '').toUpperCase();
-      const dotCls = sev === 'CRITICAL' || sev === 'HIGH' ? 'red' : sev === 'MEDIUM' ? 'amber' : 'muted';
-      return `<div class="recent-alert-row" onclick='openAlertDetail(${JSON.stringify(JSON.stringify(a))})'>
-        <span class="dot ${dotCls}" style="flex-shrink:0;"></span>
-        <div class="recent-alert-info">
-          <div class="recent-alert-name">${a.threat_name || 'Unknown threat'}</div>
-          <div class="recent-alert-meta">${a.hostname || '?'} &middot; ${a.site_name || '?'} &middot; ${fmtAge(a.detected_at || a.time)}</div>
-        </div>
-        <div style="flex-shrink:0;">
-          ${statusBadge(a.status || 'New')}
-          ${severityBadge(a.severity)}
-        </div>
-      </div>`;
-    }).join('');
-  }
-}
-
-// ================================================================ SETTINGS
-let _currentSettings = {};
-
-async function openSettings() {
-  const res = await api('/api/settings');
-  if (res.ok) _currentSettings = await res.json();
-  document.getElementById('set-orgname').value        = _currentSettings.org_name || '';
-  document.getElementById('set-offline-hours').value  = _currentSettings.offline_threshold_hours || 1;
-  document.getElementById('set-warning-days').value   = _currentSettings.offline_days_warning || 7;
-  document.getElementById('set-mttd-target').value    = _currentSettings.mttd_target_minutes || 30;
-  document.getElementById('set-mttr-target').value    = _currentSettings.mttr_target_minutes || 120;
-  document.getElementById('settings-modal').style.display = 'flex';
-}
-
-async function saveSettings() {
-  if (!getAdminKey()) return;
-  const body = {
-    org_name:                document.getElementById('set-orgname').value.trim(),
-    offline_threshold_hours: parseInt(document.getElementById('set-offline-hours').value) || 1,
-    offline_days_warning:    parseInt(document.getElementById('set-warning-days').value) || 7,
-    mttd_target_minutes:     parseInt(document.getElementById('set-mttd-target').value) || 30,
-    mttr_target_minutes:     parseInt(document.getElementById('set-mttr-target').value) || 120,
-  };
-  const res = await api('/api/settings', { method: 'PUT', body: JSON.stringify(body) });
-  if (res.ok) {
-    document.getElementById('settings-modal').style.display = 'none';
-    await loadOverview();
-    showToast('Settings saved.', 'green');
-  } else {
-    const d = await res.json().catch(()=>({detail:'Error'}));
-    alert('Failed: ' + (d.detail || ''));
-  }
-}
+function cM(id){document.getElementById(id).style.display='none';}
+function cmo(e,id){if(e.target===document.getElementById(id))cM(id);}
 
 </script>
-
-<!-- Settings Modal -->
-<div class="modal-overlay" id="settings-modal" style="display:none;" onclick="if(event.target===this)this.style.display='none'">
-  <div class="modal" style="max-width:520px;" onclick="event.stopPropagation()">
-    <div class="modal-header">
-      <span class="modal-title">Dashboard Settings</span>
-      <button class="modal-close" onclick="document.getElementById('settings-modal').style.display='none'">&#x2715;</button>
-    </div>
-    <div class="modal-body">
-      <div style="display:flex;flex-direction:column;gap:14px;">
-        <div>
-          <div class="prop-label" style="margin-bottom:4px;">Organisation Name</div>
-          <input id="set-orgname" placeholder="e.g. Sunrise Pharmacy Group"
-            style="width:100%;background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:8px 10px;border-radius:6px;font-size:13px;">
-        </div>
-        <div>
-          <div class="prop-label" style="margin-bottom:4px;">Offline Threshold (hours)</div>
-          <input id="set-offline-hours" type="number" min="1" max="24"
-            style="width:100%;background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:8px 10px;border-radius:6px;font-size:13px;">
-          <div style="font-size:11px;color:var(--muted);margin-top:4px;">Devices with no check-in within this many hours are marked Offline.</div>
-        </div>
-        <div>
-          <div class="prop-label" style="margin-bottom:4px;">Long-Offline Warning (days)</div>
-          <input id="set-warning-days" type="number" min="1" max="365"
-            style="width:100%;background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:8px 10px;border-radius:6px;font-size:13px;">
-          <div style="font-size:11px;color:var(--muted);margin-top:4px;">Devices offline longer than this appear in the "Long Offline" stat card on the Overview.</div>
-        </div>
-        <div>
-          <div class="prop-label" style="margin-bottom:4px;">MTTD Target (minutes)</div>
-          <input id="set-mttd-target" type="number" min="1" max="10080"
-            style="width:100%;background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:8px 10px;border-radius:6px;font-size:13px;">
-          <div style="font-size:11px;color:var(--muted);margin-top:4px;">Mean Time to Detect target. Progress bar is green when actual MTTD meets this. Default: 30 min.</div>
-        </div>
-        <div>
-          <div class="prop-label" style="margin-bottom:4px;">MTTR Target (minutes)</div>
-          <input id="set-mttr-target" type="number" min="1" max="43200"
-            style="width:100%;background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:8px 10px;border-radius:6px;font-size:13px;">
-          <div style="font-size:11px;color:var(--muted);margin-top:4px;">Mean Time to Respond target. Progress bar is green when actual MTTR meets this. Default: 120 min.</div>
-        </div>
-      </div>
-      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:20px;">
-        <button class="btn btn-ghost" onclick="document.getElementById('settings-modal').style.display='none'">Cancel</button>
-        <button class="btn btn-primary" onclick="saveSettings()">Save Settings</button>
-      </div>
-    </div>
-  </div>
-</div>
-
-<!-- Long Offline Device Modal -->
-<div class="modal-overlay" id="long-offline-modal" style="display:none;" onclick="if(event.target===this)this.style.display='none'">
-  <div class="modal" style="max-width:600px;" onclick="event.stopPropagation()">
-    <div class="modal-header">
-      <span class="modal-title" id="long-offline-modal-title">Long-Offline Devices</span>
-      <button class="modal-close" onclick="document.getElementById('long-offline-modal').style.display='none'">&#x2715;</button>
-    </div>
-    <div class="modal-body" id="long-offline-modal-body"></div>
-  </div>
-</div>
 </body>
 </html>
