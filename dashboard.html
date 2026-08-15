@@ -498,7 +498,7 @@ ${cA?`<td class="iac"><button class="btn btn-g" style="font-size:10px;padding:3p
   sub.innerHTML=`<div class="scroll">${tl.slice().reverse().map(e=>{
     const et=e.event_type||e.source||'event';const ic=TI[et]||'&#x25CF;';const co=TC[et]||'var(--muted)';
     const desc=e.threat_name||e.process_name||e.user||'(event)';
-    const dt=[e.command_line&&'cmd:'+e.command_line.substring(0,100),e.pid&&'PID:'+e.pid,e.remote_address&&'->'+e.remote_address].filter(Boolean).join(' | ');
+    const dt=[e.command_line&&'cmd:'+e.command_line.substring(0,100),e.pid&&'PID:'+e.pid,e.user&&'user:'+e.user,e.remote_address&&'->'+e.remote_address].filter(Boolean).join(' | ');
     return `<div class="tl-item"><div class="tl-dot" style="background:${co}"></div><div class="tl-cnt"><div class="tl-t"><span style="background:var(--surface2);padding:1px 5px;border-radius:4px;color:${co}">${ic} ${et}</span> ${fmtTS(e.time)}</div><div class="tl-e">${esc(desc)}</div>${dt?`<div class="tl-d">${esc(dt)}</div>`:''}</div></div>`;
   }).join('')}</div>`;
 }

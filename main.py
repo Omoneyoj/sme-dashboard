@@ -411,7 +411,7 @@ def fetch_device_detail(site_name: str, hostname: str) -> dict:
                     "process_name": evt.get("path", "").split("\\")[-1],
                     "pid": evt.get("pid"), "path": evt.get("path", ""),
                     "drive": evt.get("drive", ""), "action": evt.get("action", ""),
-                    "verdict": evt.get("verdict", ""),
+                    "verdict": evt.get("verdict", ""), "user": evt.get("user", ""),
                 })
     if "threat" in modules:
         for d in (modules["threat"].get("raw") or {}).get("detections", []):
@@ -419,7 +419,7 @@ def fetch_device_detail(site_name: str, hostname: str) -> dict:
                 "source": "defender", "time": d.get("TimeCreated"),
                 "event_type": "threat_detected", "threat_name": d.get("ThreatName", ""),
                 "severity": d.get("Severity", ""), "path": d.get("Path", ""),
-                "action": d.get("ActionName", ""),
+                "action": d.get("ActionName", ""), "user": d.get("DetectionUser", ""),
             })
     if "playbook_alerts" in modules:
         for a in (modules["playbook_alerts"].get("raw") or {}).get("alerts", []):
@@ -428,7 +428,7 @@ def fetch_device_detail(site_name: str, hostname: str) -> dict:
                 "event_type": "rule_match", "process_name": a.get("process_name", ""),
                 "pid": a.get("pid"), "command_line": a.get("command_line", ""),
                 "threat_name": a.get("rule_name", ""), "severity": a.get("severity", ""),
-                "action": ", ".join(a.get("actions", [])),
+                "action": ", ".join(a.get("actions", [])), "user": a.get("user", ""),
             })
     timeline.sort(key=lambda x: x.get("time") or "")
     timeline = timeline[-500:]
