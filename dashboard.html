@@ -465,13 +465,25 @@ async function openDev(site,hostname){
     t.classList.add('active');document.getElementById('sub-'+t.dataset.s).classList.add('active');
   }));
   const dev=d.device||{};
+  const accts=dev.local_accounts||[];
+  const acctRows=accts.length?`<div class="table-wrap" style="margin-top:14px"><table><thead><tr><th>Local Account</th><th>Enabled</th><th>Last Logon</th><th>Password Set</th></tr></thead>
+<tbody>${accts.map(a=>{const isCur=dev.current_user&&(dev.current_user.split('\\\\').pop()||'').toLowerCase()===(a.username||'').toLowerCase();
+return `<tr>
+<td>${esc(a.username||'-')}${isCur?' <span class="badge b-green" style="font-size:9px">CURRENT</span>':''}</td>
+<td><span class="badge ${a.enabled?'b-green':'b-muted'}">${a.enabled?'Yes':'No'}</span></td>
+<td style="font-size:11px;color:var(--muted)">${fmtTS(a.last_logon)}</td>
+<td style="font-size:11px;color:var(--muted)">${fmtTS(a.password_last_set)}</td>
+</tr>`;}).join('')}</tbody></table></div>`:'<div class="empty" style="padding:16px;margin-top:14px">No local account data reported yet</div>';
   document.getElementById('sub-dp').innerHTML=`<div class="grid2" style="margin-bottom:14px">
 <div class="prop"><div class="pl">Hostname</div><div class="pv">${esc(dev.hostname||'-')}</div></div>
 <div class="prop"><div class="pl">Site</div><div class="pv">${esc(dev.site_name||'-')}</div></div>
 <div class="prop"><div class="pl">OS</div><div class="pv" style="font-size:12px">${esc(dev.os||'-')}</div></div>
 <div class="prop"><div class="pl">Agent</div><div class="pv">${esc(dev.agent_version||'-')}</div></div>
+<div class="prop"><div class="pl">Current Logon User</div><div class="pv">${esc(dev.current_user||'No one logged on')}</div></div>
+<div class="prop"><div class="pl">Local Accounts</div><div class="pv">${accts.length||0}</div></div>
 <div class="prop"><div class="pl">First Seen</div><div class="pv" style="font-size:12px">${fmtTS(dev.first_seen)}</div></div>
-<div class="prop"><div class="pl">Last Seen</div><div class="pv" style="font-size:12px">${fmtTS(dev.last_seen)}</div></div></div>`;
+<div class="prop"><div class="pl">Last Seen</div><div class="pv" style="font-size:12px">${fmtTS(dev.last_seen)}</div></div></div>
+${acctRows}`;
   const als=d.alerts||[];
   document.getElementById('sub-da').innerHTML=als.length?als.map(a=>`<div style="padding:8px 0;border-bottom:1px solid var(--border);cursor:pointer" onclick='oA(${JSON.stringify(JSON.stringify(a))})'>
 <div style="display:flex;justify-content:space-between"><span style="font-size:13px;font-weight:500">${esc(a.threat_name||'?')}</span><span class="badge ${stC(a.status||'New')}">${a.status||'New'}</span></div>
@@ -498,7 +510,7 @@ ${cA?`<td class="iac"><button class="btn btn-g" style="font-size:10px;padding:3p
   sub.innerHTML=`<div class="scroll">${tl.slice().reverse().map(e=>{
     const et=e.event_type||e.source||'event';const ic=TI[et]||'&#x25CF;';const co=TC[et]||'var(--muted)';
     const desc=e.threat_name||e.process_name||e.user||'(event)';
-    const dt=[e.command_line&&'cmd:'+e.command_line.substring(0,100),e.pid&&'PID:'+e.pid,e.user&&'user:'+e.user,e.remote_address&&'->'+e.remote_address].filter(Boolean).join(' | ');
+    const dt=[e.command_line&&'cmd:'+e.command_line.substring(0,100),e.pid&&'PID:'+e.pid,e.remote_address&&'->'+e.remote_address].filter(Boolean).join(' | ');
     return `<div class="tl-item"><div class="tl-dot" style="background:${co}"></div><div class="tl-cnt"><div class="tl-t"><span style="background:var(--surface2);padding:1px 5px;border-radius:4px;color:${co}">${ic} ${et}</span> ${fmtTS(e.time)}</div><div class="tl-e">${esc(desc)}</div>${dt?`<div class="tl-d">${esc(dt)}</div>`:''}</div></div>`;
   }).join('')}</div>`;
 }
