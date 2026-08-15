@@ -21,6 +21,7 @@ from typing import Dict, List, Optional
 
 import boto3
 from botocore.config import Config
+from botocore.exceptions import ClientError
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
@@ -92,7 +93,26 @@ def s3(commander=False):
 def s3_get(client, key: str):
     try:
         return json.loads(client.get_object(Bucket=ORACLE_BUCKET, Key=key)["Body"].read())
-    except Exception:
+    except ClientError as e:
+        code = e.response.get("Error", {}).get("Code", "")
+        if code in ("NoSuchKey", "404"):
+            # Expected/routine: this module simply hasn't reported yet (e.g.
+            # a module added to a device for the first time, or its
+            # reporter cycle hasn't run since install). Not worth logging
+            # on every poll.
+            return None
+        # Anything else (permissions, throttling, a genuinely malformed
+        # request) is NOT routine, and used to be swallowed identically to
+        # "doesn't exist yet" - making a real upload/permissions problem
+        # indistinguishable from "just hasn't reported yet" from the
+        # dashboard's side. Print it so it at least shows up in the Render
+        # service logs instead of vanishing silently.
+        print(f"[s3_get] {key}: {code}: {e}")
+        return None
+    except Exception as e:
+        # Covers JSON decode errors from a partial/corrupt upload, network
+        # issues, etc. - same reasoning as above.
+        print(f"[s3_get] {key}: {type(e).__name__}: {e}")
         return None
 
 
