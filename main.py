@@ -679,6 +679,7 @@ def fetch_device_detail(site_name: str, hostname: str) -> dict:
                 "event_type":   evt.get("event_type", ""),
                 "process_name": evt.get("process_name", ""),
                 "pid":          evt.get("pid"),
+                "parent_pid":   evt.get("parent_pid"),
                 "parent_name":  evt.get("parent_path", ""),
                 "command_line": evt.get("command_line", ""),
                 "user":         evt.get("user", ""),
@@ -1302,33 +1303,105 @@ def _find_alert(alert_id: str, site_name: Optional[str] = None, hostname: Option
     return alert, site_name, hostname
 
 
+def _build_process_chain(alert: dict, timeline_events: list, max_depth: int = 12) -> list:
+    """Reconstructs the process ancestry chain (root ancestor -> ... -> the
+    process that triggered this alert) from process_creation Timeline
+    events on the same host — the same idea as Microsoft Defender's
+    'Alert Story'. Best-effort: alert records here carry process_name and
+    command_line but not a PID (Defender/playbook detections don't report
+    one), so the anchor process_creation event is matched by process name
+    (and command line, when both have one), preferring whichever candidate
+    is closest in time to the alert. From that anchor, parent_pid links
+    (captured by timeline_collector.py's 4688 collector) are followed
+    upward through the host's FULL recent timeline — not just the
+    ±window_minutes slice used for related_events, since a real ancestor
+    like explorer.exe or winlogon.exe often started well before that
+    window — until no matching parent is found or max_depth is hit.
+    Returns root-first, anchor process last; [] if nothing could be
+    matched (e.g. no process_creation events collected for this host)."""
+    proc_events = [e for e in timeline_events
+                   if e.get("event_type") == "process_creation" and e.get("pid") is not None]
+    if not proc_events:
+        return []
+    target_name = (alert.get("process_name") or "").lower()
+    if not target_name:
+        return []
+    candidates = [e for e in proc_events if (e.get("process_name") or "").lower() == target_name]
+    if not candidates:
+        return []
+
+    dt_alert = _parse_utc(alert.get("detected_at") or alert.get("time") or "")
+    target_cmd = (alert.get("command_line") or "").lower()
+
+    def score(e):
+        s = 0.0
+        if target_cmd and target_cmd in (e.get("command_line") or "").lower():
+            s += 100
+        dt_e = _parse_utc(e.get("time") or "")
+        if dt_alert and dt_e:
+            s -= abs((dt_e - dt_alert).total_seconds())  # closer in time wins ties
+        return s
+
+    anchor = max(candidates, key=score)
+
+    # Most-recent event per PID, since a PID can be reused within the
+    # collection window and we want each hop to resolve to the process
+    # instance that was actually alive around the anchor's time.
+    by_pid: Dict[int, dict] = {}
+    for e in proc_events:
+        pid = e.get("pid")
+        prev = by_pid.get(pid)
+        if prev is None or (e.get("time") or "") > (prev.get("time") or ""):
+            by_pid[pid] = e
+
+    chain = [anchor]
+    current = anchor
+    seen_pids = {current.get("pid")}
+    for _ in range(max_depth):
+        ppid = current.get("parent_pid")
+        if ppid is None or ppid in seen_pids:
+            break
+        parent = by_pid.get(ppid)
+        if not parent:
+            break
+        chain.append(parent)
+        seen_pids.add(ppid)
+        current = parent
+    chain.reverse()
+    return chain
+
+
 def _alert_investigation_context(alert: dict, site_name: Optional[str], hostname: Optional[str],
                                   window_minutes: int = 10) -> dict:
     """Shared correlation logic used by both GET /api/alerts/{id}/context
     (on-demand, for the modal) and _auto_generate_ai_analysis (background,
     right after an alert is created) — Timeline events within
-    ±window_minutes, sibling alerts in the same window, and the matched
-    playbook rule's full definition if this alert came from one."""
+    ±window_minutes, sibling alerts in the same window, the reconstructed
+    process ancestry chain, and the matched playbook rule's full
+    definition if this alert came from one."""
     client = s3()
     dt_alert = _parse_utc(alert.get("detected_at") or alert.get("time") or "")
     window_s = window_minutes * 60
-    related, siblings, rule_detail = [], [], None
-    if site_name and hostname and dt_alert:
+    related, siblings, rule_detail, process_chain = [], [], None, []
+    if site_name and hostname:
         detail = fetch_device_detail(site_name, hostname)
-        for evt in detail.get("timeline", []):
-            dt_evt = _parse_utc(evt.get("time") or "")
-            if dt_evt:
-                diff = (dt_evt - dt_alert).total_seconds()
-                if abs(diff) <= window_s:
-                    related.append({**evt, "_delta_secs": round(diff, 1)})
-        related.sort(key=lambda x: x.get("time") or "")
+        timeline = detail.get("timeline", [])
+        if dt_alert:
+            for evt in timeline:
+                dt_evt = _parse_utc(evt.get("time") or "")
+                if dt_evt:
+                    diff = (dt_evt - dt_alert).total_seconds()
+                    if abs(diff) <= window_s:
+                        related.append({**evt, "_delta_secs": round(diff, 1)})
+            related.sort(key=lambda x: x.get("time") or "")
+        process_chain = _build_process_chain(alert, timeline)
         for m in fetch_status():
             if m["site_name"] == site_name and m["hostname"] == hostname:
                 for a in m.get("alerts", []):
                     if a.get("id") == alert.get("id"):
                         continue
                     dt_a = _parse_utc(a.get("detected_at") or a.get("time") or "")
-                    if dt_a and abs((dt_a - dt_alert).total_seconds()) <= window_s:
+                    if dt_a and dt_alert and abs((dt_a - dt_alert).total_seconds()) <= window_s:
                         siblings.append(a)
     if alert.get("rule_name") and client:
         gdata = s3_get(client, "rules/global/rules.json") or {}
@@ -1337,7 +1410,8 @@ def _alert_investigation_context(alert: dict, site_name: Optional[str], hostname
                 rule_detail = r
                 break
     return {"related_events": related, "sibling_alerts": siblings,
-            "rule_detail": rule_detail, "window_minutes": window_minutes}
+            "rule_detail": rule_detail, "process_chain": process_chain,
+            "window_minutes": window_minutes}
 
 
 @app.get("/api/alerts/{alert_id}/context")

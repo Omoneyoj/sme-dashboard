@@ -777,14 +777,55 @@ ${a.hostname&&a.site_name?`<button class="btn btn-g" onclick="openDev('${eA(a.si
 </div>`:''}`;
 }
 
+// Process ancestry ("Alert Story"): each row expandable to show PID,
+// parent PID, path, user, start time, and full command line. Anchor
+// process (the one that triggered the alert) is highlighted and pinned
+// to the bottom, matching root-first / anchor-last chain order from the
+// backend.
+function renderProcessChain(chain){
+  if(!chain||!chain.length)return '';
+  const rows=chain.map((p,i)=>{
+    const isLast=i===chain.length-1;
+    const indent=i*18;
+    return `<div style="margin-left:${indent}px">
+<div class="pc-row" onclick="togglePC(this)" style="cursor:pointer;display:flex;align-items:center;gap:8px;padding:6px 10px;border:1px solid ${isLast?'var(--red)':'var(--border)'};background:${isLast?'rgba(239,68,68,.08)':'var(--surface2)'};border-radius:6px;margin-bottom:4px">
+<span class="pc-chev" style="font-size:9px;color:var(--muted);width:10px">&#x25B6;</span>
+<span style="font-family:monospace;font-size:11px;color:var(--muted)">[${p.pid??'?'}]</span>
+<strong style="font-size:12px">${esc(p.process_name||'?')}</strong>
+${isLast?'<span class="badge b-red" style="margin-left:auto;font-size:10px">Alert Process</span>':''}
+</div>
+<div class="pc-detail" style="display:none;background:var(--bg);border-radius:6px;padding:10px;margin:-2px 0 8px 0;font-size:11px;line-height:1.9">
+<div><span style="color:var(--muted)">PID:</span> ${p.pid??'-'}</div>
+${p.parent_pid!=null?`<div><span style="color:var(--muted)">Parent PID:</span> ${p.parent_pid}</div>`:''}
+${p.path?`<div><span style="color:var(--muted)">Path:</span> <span style="font-family:monospace;word-break:break-all">${esc(p.path)}</span></div>`:''}
+${p.user?`<div><span style="color:var(--muted)">User:</span> ${esc(p.user)}</div>`:''}
+${p.time?`<div><span style="color:var(--muted)">Started:</span> ${fmtTS(p.time)}</div>`:''}
+${p.command_line?`<div style="margin-top:4px"><span style="color:var(--muted)">Command Line:</span><div style="font-family:monospace;word-break:break-all;background:var(--surface2);padding:6px;border-radius:4px;margin-top:2px">${esc(p.command_line)}</div></div>`:''}
+</div></div>`;
+  }).join('');
+  return `<div style="margin-top:14px"><div class="sec-title">&#x1F333; Process Ancestry</div>
+<div style="font-size:11px;color:var(--muted);margin:2px 0 8px">Reconstructed from Timeline process-creation events on this device. Click a row for details.</div>
+<div>${rows}</div></div>`;
+}
+
+function togglePC(rowEl){
+  const detail=rowEl.nextElementSibling;
+  const chev=rowEl.querySelector('.pc-chev');
+  if(!detail)return;
+  const open=detail.style.display!=='none';
+  detail.style.display=open?'none':'block';
+  if(chev)chev.innerHTML=open?'&#x25B6;':'&#x25BC;';
+}
+
 function renderAF(a,ctx){
-  const rel=ctx.related_events||[];const sib=ctx.sibling_alerts||[];const rule=ctx.rule_detail;
+  const rel=ctx.related_events||[];const sib=ctx.sibling_alerts||[];const rule=ctx.rule_detail;const chain=ctx.process_chain||[];
   const relH=rel.length===0?'<div style="color:var(--muted);font-size:12px;padding:8px">No events in this window</div>':rel.map(e=>{const dv=e._delta_secs||0;return `<div class="tl-item">
 <div class="tl-dot" style="background:${dv<0?'var(--muted)':'var(--amber)'}"></div>
 <div class="tl-cnt"><div class="tl-t"><span style="font-family:monospace;color:${dv<0?'var(--muted)':'var(--amber)'}">${dv>0?'+':''}${dv}s</span> ${fmtTS(e.time)}</div>
 <div class="tl-e">${esc(e.process_name||e.threat_name||e.user||'(event)')} <span style="font-size:10px;color:var(--muted)">[${e.event_type||e.source}]</span></div>
 ${e.command_line?`<div class="tl-d">${esc(e.command_line.substring(0,120))}</div>`:''}</div></div>`;}).join('');
   return renderAB(a)+`
+${renderProcessChain(chain)}
 ${rule?`<div style="background:rgba(168,85,247,.07);border:1px solid rgba(168,85,247,.2);border-radius:8px;padding:10px;margin-top:10px">
 <div style="font-size:11px;font-weight:600;color:var(--purple);margin-bottom:5px">&#x1F4CB; Matched Rule: ${esc(rule.name)}</div>
 <div style="font-size:11px;color:var(--muted2)">MITRE: ${esc(rule.mitre_tactic||'-')} | Actions: ${(rule.actions||[]).join(', ')}</div></div>`:''}
