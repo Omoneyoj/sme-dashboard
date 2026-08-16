@@ -491,17 +491,72 @@ async function openDev(site,hostname){
 ${cA?`<td class="iac"><button class="btn btn-g" style="font-size:10px;padding:3px 7px" onclick="sancApp('${eA(a.name)}',${a.sanctioned===false})">${a.sanctioned===false?'Sanction':'Unsanction'}</button><button class="btn btn-d" style="font-size:10px;padding:3px 7px" onclick="uinstApp('${eA(site)}','${eA(hostname)}','${eA(a.name)}')">Uninstall</button></td>`:''}
 </tr>`).join('')}</tbody></table></div>`:'<div class="empty" style="padding:24px">No app data yet</div>';
 
-  const tl=d.timeline||[];
-  const TI={process_creation:'&#x2699;',logon:'&#x1F511;',logon_failure:'&#x26A0;',logoff:'&#x1F6AA;',service_installed:'&#x1F6E0;',service_crash:'&#x1F4A5;',threat_detected:'&#x1F6A8;',rule_match:'&#x1F4CB;',usb_execution:'&#x1F4BE;',suspicious_process:'&#x1F534;',network_connection:'&#x1F310;',defender:'&#x1F6E1;'};
-  const TC={process_creation:'var(--blue)',logon:'var(--green)',logon_failure:'var(--red)',logoff:'var(--muted)',service_installed:'var(--amber)',service_crash:'var(--red)',threat_detected:'var(--red)',rule_match:'var(--amber)',usb_execution:'var(--amber)',suspicious_process:'var(--red)',network_connection:'var(--cyan)',defender:'var(--blue)'};
+  _TL=d.timeline||[];_TLdev={site,hostname};_tlF='';_tlType='';_tlStart='';_tlEnd='';
+  renderTimelineTab();
+}
+
+// ── Device Timeline tab: table view with type/content/date-range filters + CSV export ──
+let _TL=[],_TLdev={site:'',hostname:''},_tlF='',_tlType='',_tlStart='',_tlEnd='';
+const TL_ICON={process_creation:'&#x2699;',logon:'&#x1F511;',logon_failure:'&#x26A0;',logoff:'&#x1F6AA;',service_installed:'&#x1F6E0;',service_crash:'&#x1F4A5;',threat_detected:'&#x1F6A8;',rule_match:'&#x1F4CB;',usb_execution:'&#x1F4BE;',suspicious_process:'&#x1F534;',network_connection:'&#x1F310;',defender:'&#x1F6E1;'};
+const TL_COLOR={process_creation:'var(--blue)',logon:'var(--green)',logon_failure:'var(--red)',logoff:'var(--muted)',service_installed:'var(--amber)',service_crash:'var(--red)',threat_detected:'var(--red)',rule_match:'var(--amber)',usb_execution:'var(--amber)',suspicious_process:'var(--red)',network_connection:'var(--cyan)',defender:'var(--blue)'};
+const TL_SEARCH_FIELDS=['threat_name','process_name','command_line','path','user','parent_name','source_ip','remote_address','event_type'];
+const TL_CSV_COLS=['time','event_type','process_name','pid','parent_name','user','command_line','path','logon_type','source_ip','remote_address','remote_port','threat_name','severity','action'];
+
+function tlFiltered(){
+  let rows=_TL.slice();
+  if(_tlType)rows=rows.filter(e=>(e.event_type||e.source||'event')===_tlType);
+  if(_tlF){const q=_tlF.toLowerCase();rows=rows.filter(e=>TL_SEARCH_FIELDS.some(k=>(e[k]||'').toString().toLowerCase().includes(q)));}
+  if(_tlStart){const sd=new Date(_tlStart);rows=rows.filter(e=>{const d=pTS(e.time);return d&&d>=sd;});}
+  if(_tlEnd){const ed=new Date(_tlEnd);rows=rows.filter(e=>{const d=pTS(e.time);return d&&d<=ed;});}
+  return rows;
+}
+
+function renderTimelineTab(){
   const sub=document.getElementById('sub-dt');
-  if(!tl.length){sub.innerHTML='<div class="empty" style="padding:24px">No timeline yet. Collects every 30 min after startup.</div>';return;}
-  sub.innerHTML=`<div class="scroll">${tl.slice().reverse().map(e=>{
-    const et=e.event_type||e.source||'event';const ic=TI[et]||'&#x25CF;';const co=TC[et]||'var(--muted)';
+  if(!sub)return;
+  if(!_TL.length){sub.innerHTML='<div class="empty" style="padding:24px">No timeline yet. Collects every 30 min after startup.</div>';return;}
+  const rows=tlFiltered();
+  const types=[...new Set(_TL.map(e=>e.event_type||e.source||'event'))].sort();
+  const active=_tlF||_tlType||_tlStart||_tlEnd;
+  const tRow=e=>{
+    const et=e.event_type||e.source||'event';const ic=TL_ICON[et]||'&#x25CF;';const co=TL_COLOR[et]||'var(--muted)';
     const desc=e.threat_name||e.process_name||e.user||'(event)';
-    const dt=[e.command_line&&'cmd:'+e.command_line.substring(0,100),e.pid&&'PID:'+e.pid,e.remote_address&&'->'+e.remote_address].filter(Boolean).join(' | ');
-    return `<div class="tl-item"><div class="tl-dot" style="background:${co}"></div><div class="tl-cnt"><div class="tl-t"><span style="background:var(--surface2);padding:1px 5px;border-radius:4px;color:${co}">${ic} ${et}</span> ${fmtTS(e.time)}</div><div class="tl-e">${esc(desc)}</div>${dt?`<div class="tl-d">${esc(dt)}</div>`:''}</div></div>`;
-  }).join('')}</div>`;
+    const detail=e.command_line||e.path||e.remote_address||e.parent_name||'';
+    return `<tr>
+<td style="font-size:11px;white-space:nowrap;color:var(--muted)">${fmtTS(e.time)}</td>
+<td style="white-space:nowrap;font-size:11px"><span style="color:${co}">${ic}</span> ${esc(et)}</td>
+<td style="font-size:12px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(desc)}</td>
+<td style="font-size:11px">${e.pid??'-'}</td>
+<td style="font-size:11px;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(e.user||'-')}</td>
+<td style="font-size:11px;font-family:monospace;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(detail)}">${esc(detail)}</td>
+<td style="font-size:11px">${esc(e.severity||e.action||'-')}</td></tr>`;};
+  sub.innerHTML=`<div class="filter-bar">
+<input class="fi" value="${esc(_tlF)}" placeholder="Search process, user, path, command..." style="width:220px" oninput="_tlF=this.value;renderTimelineTab()">
+<select class="fs" onchange="_tlType=this.value;renderTimelineTab()">
+  <option value="">All types</option>${types.map(t=>`<option value="${esc(t)}" ${t===_tlType?'selected':''}>${esc(t)}</option>`).join('')}
+</select>
+<input class="fi" type="datetime-local" value="${_tlStart}" onchange="_tlStart=this.value;renderTimelineTab()" title="Start date/time">
+<span style="color:var(--muted);font-size:11px">&#8594;</span>
+<input class="fi" type="datetime-local" value="${_tlEnd}" onchange="_tlEnd=this.value;renderTimelineTab()" title="End date/time">
+${active?`<button class="btn btn-g" style="font-size:11px" onclick="_tlF='';_tlType='';_tlStart='';_tlEnd='';renderTimelineTab()">&#x2715; Clear</button>`:''}
+<button class="btn btn-g" style="font-size:11px;margin-left:auto" onclick="exportTimelineCsv()">&#x2913; Export CSV</button>
+</div>
+<div style="font-size:11px;color:var(--muted);margin-bottom:8px">${rows.length} of ${_TL.length} event(s)${active?' (filtered)':''}</div>
+${!rows.length?'<div class="empty" style="padding:24px">No events match filters</div>':`<div class="table-wrap"><table><thead><tr><th>Time</th><th>Type</th><th>Description</th><th>PID</th><th>User</th><th>Detail</th><th>Severity/Action</th></tr></thead><tbody>${rows.slice().reverse().map(tRow).join('')}</tbody></table></div>`}`;
+}
+
+function exportTimelineCsv(){
+  const rows=tlFiltered();
+  if(!rows.length){alert('No events to export.');return;}
+  const csvEsc=v=>{const s=(v===undefined||v===null)?'':String(v);return /[",\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s;};
+  const lines=[TL_CSV_COLS.join(','),...rows.map(e=>TL_CSV_COLS.map(c=>csvEsc(e[c])).join(','))];
+  const blob=new Blob([lines.join('\r\n')],{type:'text/csv;charset=utf-8;'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  const stamp=new Date().toISOString().replace(/[:.]/g,'-').slice(0,19);
+  a.href=url;a.download=`timeline_${_TLdev.hostname||'device'}_${stamp}.csv`;
+  document.body.appendChild(a);a.click();document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 }
 
 let _aF='',_aS='',_aSev='',_aSite='',_aG='none';
