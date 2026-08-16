@@ -423,6 +423,202 @@ def _parse_utc(s: str) -> Optional[datetime.datetime]:
         return None
 
 
+# ── Static Detection Knowledge Base ────────────────────────────────────────
+# Gives EVERY alert a baseline Description, linked MITRE ATT&CK technique,
+# and a Next Steps checklist the instant it's created — no AI dependency,
+# no API cost, works even with ANTHROPIC_API_KEY unset. This is layer 1 of
+# two; layer 2 (optional, see _auto_generate_ai_analysis below) adds a
+# richer Claude-generated analysis on top when a key IS configured, but
+# nothing in the platform should ever show an analyst a bare, unexplained
+# alert just because that key is missing or the API call failed.
+#
+# Playbook rules (rules/*.json, user-authored) already carry a free-text
+# mitre_tactic field like "T1003.006 - DCSync" — MITRE_ID_RE below pulls
+# the technique ID out of that string, so any rule an admin writes gets
+# real KB coverage automatically as long as they fill in a valid ID.
+# Built-in Defender/AV detections don't carry MITRE natively, so
+# DEFENDER_CATEGORY_TECHNIQUE maps Microsoft's threat Category names to a
+# representative technique instead.
+MITRE_ID_RE = re.compile(r"T\d{4}(?:\.\d{3})?")
+
+MITRE_TECHNIQUES = {
+    "T1003":     {"name": "OS Credential Dumping",                    "family": "credential_theft"},
+    "T1003.006": {"name": "DCSync",                                    "family": "credential_theft"},
+    "T1110":     {"name": "Brute Force",                               "family": "credential_access"},
+    "T1110.001": {"name": "Password Guessing",                        "family": "credential_access"},
+    "T1059":     {"name": "Command and Scripting Interpreter",        "family": "execution"},
+    "T1059.001": {"name": "PowerShell",                               "family": "execution"},
+    "T1204":     {"name": "User Execution",                           "family": "execution"},
+    "T1204.002": {"name": "Malicious File",                           "family": "execution"},
+    "T1203":     {"name": "Exploitation for Client Execution",        "family": "execution"},
+    "T1055":     {"name": "Process Injection",                        "family": "defense_evasion"},
+    "T1027":     {"name": "Obfuscated Files or Information",          "family": "defense_evasion"},
+    "T1112":     {"name": "Modify Registry",                          "family": "defense_evasion"},
+    "T1562":     {"name": "Impair Defenses",                          "family": "defense_evasion"},
+    "T1562.001": {"name": "Disable or Modify Tools",                  "family": "defense_evasion"},
+    "T1486":     {"name": "Data Encrypted for Impact",                "family": "ransomware"},
+    "T1490":     {"name": "Inhibit System Recovery",                  "family": "ransomware"},
+    "T1547":     {"name": "Boot or Logon Autostart Execution",        "family": "persistence"},
+    "T1547.001": {"name": "Registry Run Keys / Startup Folder",       "family": "persistence"},
+    "T1053":     {"name": "Scheduled Task/Job",                       "family": "persistence"},
+    "T1053.005": {"name": "Scheduled Task",                           "family": "persistence"},
+    "T1136":     {"name": "Create Account",                           "family": "persistence"},
+    "T1098":     {"name": "Account Manipulation",                     "family": "persistence"},
+    "T1078":     {"name": "Valid Accounts",                           "family": "initial_access"},
+    "T1021":     {"name": "Remote Services",                          "family": "lateral_movement"},
+    "T1021.001": {"name": "Remote Desktop Protocol",                  "family": "lateral_movement"},
+    "T1210":     {"name": "Exploitation of Remote Services",          "family": "lateral_movement"},
+    "T1071":     {"name": "Application Layer Protocol",               "family": "c2"},
+    "T1071.001": {"name": "Web Protocols",                            "family": "c2"},
+    "T1105":     {"name": "Ingress Tool Transfer",                    "family": "c2"},
+    "T1074":     {"name": "Data Staged",                              "family": "exfiltration"},
+    "T1041":     {"name": "Exfiltration Over C2 Channel",             "family": "exfiltration"},
+    "T1052":     {"name": "Exfiltration Over Physical Medium",        "family": "exfiltration"},
+    "T1052.001": {"name": "Exfiltration Over USB",                    "family": "exfiltration"},
+    "T1005":     {"name": "Data from Local System",                  "family": "collection"},
+    "T1057":     {"name": "Process Discovery",                        "family": "discovery"},
+    "T1082":     {"name": "System Information Discovery",             "family": "discovery"},
+    "T1018":     {"name": "Remote System Discovery",                  "family": "discovery"},
+    "T1046":     {"name": "Network Service Discovery",                "family": "discovery"},
+}
+
+# Maps Microsoft Defender's ThreatName Category (case-insensitive substring
+# match against category/threat_name) to a representative MITRE technique
+# for detections that only ever come from the AV engine, not a playbook rule.
+DEFENDER_CATEGORY_TECHNIQUE = {
+    "ransom": "T1486", "trojandownloader": "T1105", "trojandropper": "T1105",
+    "trojan": "T1204.002", "backdoor": "T1071", "hacktool": "T1059",
+    "pws": "T1003", "exploit": "T1203", "worm": "T1210",
+    "virtool": "T1027", "spyware": "T1005",
+}
+
+FAMILY_NEXT_STEPS = {
+    "credential_theft": [
+        "Reset the affected user's password and any local administrator passwords on this host.",
+        "If this is a domain controller, double-reset the krbtgt account password (invalidates any forged Kerberos tickets).",
+        "Review Windows Event ID 4662 (Directory Service Access) and 4624 (Logon) for the source account and host.",
+        "Isolate the source host until credential exposure is ruled out.",
+    ],
+    "credential_access": [
+        "Lock or reset the targeted account after repeated failures.",
+        "Review the source IP/host for the failed attempts — block it if external and unexpected.",
+        "Confirm an account lockout policy is in place.",
+        "Check for a subsequent successful logon from the same source shortly after.",
+    ],
+    "ransomware": [
+        "Isolate the affected host immediately to stop encryption from spreading to shares or other devices.",
+        "Identify and preserve Volume Shadow Copies / backups before taking further action.",
+        "Check other hosts on the same site for the same file or process signature.",
+        "Do not pay or negotiate without involving legal/insurance guidance.",
+    ],
+    "persistence": [
+        "Review the referenced registry key, scheduled task, or startup entry for legitimacy.",
+        "Remove the persistence mechanism only after confirming it's malicious.",
+        "Check for other persistence artifacts left by the same actor or tooling.",
+        "Reset credentials for any account used to create the persistence.",
+    ],
+    "execution": [
+        "Review the full command line for obfuscation, encoded payloads, or unusual flags.",
+        "Confirm whether the parent process is a legitimate application (browser, email client, Office) or a delivery mechanism.",
+        "Quarantine or block the executable if it's confirmed malicious.",
+        "Check the Timeline tab for what ran immediately before and after this event.",
+    ],
+    "defense_evasion": [
+        "Verify Windows Defender / AV is still enabled and hasn't been tampered with on this host.",
+        "Check for unsigned or newly-dropped binaries alongside the flagged process.",
+        "Review scheduled tasks and services created around the same time.",
+        "Run a Force Audit on this device (Live Status) after remediation to confirm a clean state.",
+    ],
+    "c2": [
+        "Block the destination IP/domain at the network or DNS level.",
+        "Isolate the host to cut off command-and-control communication.",
+        "Identify what data, if any, was transferred before detection.",
+        "Check other hosts for connections to the same destination.",
+    ],
+    "exfiltration": [
+        "Identify what data was accessed or copied before the event.",
+        "If USB-related, review the USB Lockdown log for the device serial and files copied.",
+        "Notify appropriate stakeholders per your data-breach policy.",
+        "Revoke access for the account involved pending investigation.",
+    ],
+    "collection": [
+        "Identify what data the process accessed before detection.",
+        "Check for evidence of exfiltration (outbound connections, USB activity) around the same time.",
+        "Notify stakeholders per your data-handling policy if sensitive data was involved.",
+    ],
+    "lateral_movement": [
+        "Check whether the same credentials were used to access other hosts.",
+        "Review firewall/RDP logs for the source and destination hosts.",
+        "Restrict or disable the account used until confirmed legitimate.",
+        "Segment or isolate the destination host if compromise is suspected.",
+    ],
+    "initial_access": [
+        "Confirm whether this login/account use was expected (travel, new device, etc.).",
+        "Enable or verify MFA for the account if not already required.",
+        "Reset the account password if unauthorized use is suspected.",
+        "Review recent activity for the account across all monitored hosts.",
+    ],
+    "discovery": [
+        "Discovery activity alone is often a precursor — review what ran immediately afterward in the Timeline tab.",
+        "Confirm whether the user/process performing discovery is expected admin activity.",
+        "Watch this host closely for follow-on lateral-movement or execution alerts.",
+    ],
+}
+GENERIC_NEXT_STEPS = [
+    "Review the process, command line, and user involved in the Alert Details.",
+    "Check the Timeline tab for related activity on this device around the same time.",
+    "Escalate to Open if this needs investigation, or Close if confirmed benign.",
+    "Consider a Force Audit on this device once remediated.",
+]
+
+
+def _mitre_lookup(tech_id: str) -> Optional[dict]:
+    info = MITRE_TECHNIQUES.get(tech_id)
+    if not info and "." in tech_id:
+        info = MITRE_TECHNIQUES.get(tech_id.split(".")[0])
+    return info
+
+
+def enrich_alert(alert: dict) -> dict:
+    """Layer 1: fills description / mitre_technique_id / mitre_technique_name
+    / mitre_url / next_steps from the static knowledge base above. Called
+    once when an alert is first created (see get_all_alerts); idempotent —
+    if the alert already has these fields (from a prior enrichment, or an
+    AI analysis that refined them) it's left untouched."""
+    if alert.get("mitre_technique_id") is not None and alert.get("next_steps"):
+        return alert
+
+    tech_id = None
+    m = MITRE_ID_RE.search(alert.get("mitre_tactic") or "")
+    if m:
+        tech_id = m.group(0)
+    if not tech_id and (alert.get("source") or "").startswith("defender"):
+        cat = (alert.get("category") or alert.get("threat_name") or "").lower()
+        for key, tid in DEFENDER_CATEGORY_TECHNIQUE.items():
+            if key in cat:
+                tech_id = tid
+                break
+
+    info = _mitre_lookup(tech_id) if tech_id else None
+    family = info["family"] if info else None
+    steps = FAMILY_NEXT_STEPS.get(family, GENERIC_NEXT_STEPS)
+
+    hostname = alert.get("hostname") or "this device"
+    threat = alert.get("threat_name") or "a security event"
+    process = alert.get("process_name")
+    who = f" involving {process}" if process else ""
+    tech_phrase = f" (MITRE {tech_id} - {info['name']})" if info else ""
+    description = (f"{threat}{tech_phrase} was detected on {hostname}{who}. "
+                   f"Severity: {alert.get('severity') or 'MEDIUM'}. Source: {alert.get('source') or 'unknown'}.")
+
+    alert["description"]          = alert.get("description") or description
+    alert["mitre_technique_id"]   = tech_id or ""
+    alert["mitre_technique_name"] = info["name"] if info else ""
+    alert["mitre_url"]            = f"https://attack.mitre.org/techniques/{tech_id.replace('.', '/')}/" if tech_id else ""
+    alert["next_steps"]           = alert.get("next_steps") or steps
+    return alert
+
+
 def fetch_all_alerts() -> list:
     cached = cache_get("alerts")
     if cached is not None:
@@ -985,6 +1181,7 @@ async def get_all_alerts(request: Request, status: Optional[str] = None,
                 "source":      src, "status": "New",
                 "severity":    raw_alert.get("severity") or "MEDIUM",
                 "threat_name": raw_alert.get("threat_name") or "Unknown Threat",
+                "category":    raw_alert.get("category") or "",
                 "action":      raw_alert.get("action") or "",
                 "process_name":raw_alert.get("process_name") or "",
                 "command_line":raw_alert.get("command_line") or "",
@@ -994,11 +1191,21 @@ async def get_all_alerts(request: Request, status: Optional[str] = None,
                 "updated_at":  datetime.datetime.utcnow().isoformat(timespec="milliseconds"),
                 "notes":       "",
             }
+            # Layer 1: static knowledge base — description/MITRE link/next
+            # steps, present immediately, no AI dependency.
+            new_alert = enrich_alert(new_alert)
             if write_client:
                 _persist_alert(write_client, new_alert)
             alerts.append(new_alert)
             existing_ids.add(aid)
             cache_bust("alerts")
+            # Layer 2 (optional): if Claude is configured, generate a
+            # richer analysis in the background and persist it onto the
+            # alert once — never blocks this request, and every future
+            # viewer sees the same persisted result instead of each
+            # re-triggering (and re-paying for) their own API call.
+            if ANTHROPIC_API_KEY:
+                asyncio.create_task(_auto_generate_ai_analysis(dict(new_alert)))
 
     if status:
         alerts = [a for a in alerts if a.get("status") == status]
@@ -1073,19 +1280,14 @@ async def bulk_update_alerts(request: Request, user=Depends(require_perm("alerts
     return JSONResponse({"updated": len(updated), "ids": updated})
 
 
-@app.get("/api/alerts/{alert_id}/context")
-async def get_alert_context(alert_id: str, request: Request,
-                             site_name: Optional[str] = None,
-                             hostname: Optional[str] = None,
-                             window_minutes: int = 10):
-    user = await get_user(request)
-    if not user:
-        raise HTTPException(401, "Authentication required")
+def _find_alert(alert_id: str, site_name: Optional[str] = None, hostname: Optional[str] = None):
+    """Looks up one alert by id, optionally scoped to a site/hostname for a
+    direct Oracle read (fast path); falls back to scanning fetch_status()
+    (cached) if not scoped or not found directly. Returns
+    (alert_or_None, site_name, hostname)."""
     client = s3()
-    if not client:
-        raise HTTPException(503, "Oracle not configured")
     alert = None
-    if site_name and hostname:
+    if site_name and hostname and client:
         alert = s3_get(client, f"{ALERTS_PREFIX}{site_name}/{hostname}/{alert_id}.json")
     if alert is None:
         for m in fetch_status():
@@ -1097,13 +1299,20 @@ async def get_alert_context(alert_id: str, request: Request,
                     break
             if alert:
                 break
-    if alert is None:
-        raise HTTPException(404, f"Alert {alert_id} not found")
-    dt_alert   = _parse_utc(alert.get("detected_at") or alert.get("time") or "")
-    window_s   = window_minutes * 60
-    related    = []
-    siblings   = []
-    rule_detail= None
+    return alert, site_name, hostname
+
+
+def _alert_investigation_context(alert: dict, site_name: Optional[str], hostname: Optional[str],
+                                  window_minutes: int = 10) -> dict:
+    """Shared correlation logic used by both GET /api/alerts/{id}/context
+    (on-demand, for the modal) and _auto_generate_ai_analysis (background,
+    right after an alert is created) — Timeline events within
+    ±window_minutes, sibling alerts in the same window, and the matched
+    playbook rule's full definition if this alert came from one."""
+    client = s3()
+    dt_alert = _parse_utc(alert.get("detected_at") or alert.get("time") or "")
+    window_s = window_minutes * 60
+    related, siblings, rule_detail = [], [], None
     if site_name and hostname and dt_alert:
         detail = fetch_device_detail(site_name, hostname)
         for evt in detail.get("timeline", []):
@@ -1116,7 +1325,7 @@ async def get_alert_context(alert_id: str, request: Request,
         for m in fetch_status():
             if m["site_name"] == site_name and m["hostname"] == hostname:
                 for a in m.get("alerts", []):
-                    if a.get("id") == alert_id:
+                    if a.get("id") == alert.get("id"):
                         continue
                     dt_a = _parse_utc(a.get("detected_at") or a.get("time") or "")
                     if dt_a and abs((dt_a - dt_alert).total_seconds()) <= window_s:
@@ -1127,9 +1336,24 @@ async def get_alert_context(alert_id: str, request: Request,
             if r.get("name") == alert.get("rule_name"):
                 rule_detail = r
                 break
-    return JSONResponse({"alert": alert, "related_events": related,
-                          "sibling_alerts": siblings, "rule_detail": rule_detail,
-                          "window_minutes": window_minutes})
+    return {"related_events": related, "sibling_alerts": siblings,
+            "rule_detail": rule_detail, "window_minutes": window_minutes}
+
+
+@app.get("/api/alerts/{alert_id}/context")
+async def get_alert_context(alert_id: str, request: Request,
+                             site_name: Optional[str] = None,
+                             hostname: Optional[str] = None,
+                             window_minutes: int = 10):
+    user = await get_user(request)
+    if not user:
+        raise HTTPException(401, "Authentication required")
+    alert, site_name, hostname = _find_alert(alert_id, site_name, hostname)
+    if alert is None:
+        raise HTTPException(404, f"Alert {alert_id} not found")
+    ctx = _alert_investigation_context(alert, site_name, hostname, window_minutes)
+    return JSONResponse({"alert": alert, **ctx})
+
 
 
 # ── App Management ────────────────────────────────────────────────────────────
@@ -1266,21 +1490,9 @@ async def uninstall_apps_bulk(request: Request, user=Depends(require_perm("apps"
     return JSONResponse({"status": "queued", "count": len(queued), "items": queued})
 
 
-# ── AI Analysis (Claude API) ──────────────────────────────────────────────────
-@app.post("/api/ai/analyze-alert")
-async def ai_analyze_alert(request: Request, user=Depends(require_perm("alerts"))):
-    """
-    Use Claude to generate an AI-powered incident analysis for an alert.
-    Requires ANTHROPIC_API_KEY environment variable on Render.
-    """
-    if not ANTHROPIC_API_KEY:
-        raise HTTPException(503, "ANTHROPIC_API_KEY not configured on this server. "
-                                  "Add it as a Render environment variable to enable AI analysis.")
-    body  = await request.json()
-    alert = body.get("alert", {})
-    related_events = body.get("related_events", [])
-
-    prompt = f"""You are a cybersecurity analyst reviewing an endpoint detection alert from an SME security platform.
+# ── AI Analysis (Claude API) — Layer 2, optional on top of the static KB ──────
+def _build_analysis_prompt(alert: dict, related_events: list) -> str:
+    return f"""You are a cybersecurity analyst reviewing an endpoint detection alert from an SME security platform.
 
 Alert Details:
 - Threat/Rule: {alert.get('threat_name', 'Unknown')}
@@ -1289,11 +1501,11 @@ Alert Details:
 - Device: {alert.get('hostname', 'Unknown')} (Site: {alert.get('site_name', 'Unknown')})
 - Detected: {alert.get('detected_at', 'Unknown')}
 - Process: {alert.get('process_name', 'Unknown')}
-- Command Line: {alert.get('command_line', 'N/A')[:500]}
+- Command Line: {(alert.get('command_line') or 'N/A')[:500]}
 - MITRE Tactic: {alert.get('mitre_tactic', 'Unknown')}
 
 Related Events (chronological, ±10 min):
-{chr(10).join(f"  [{e.get('_delta_secs',0):+.0f}s] {e.get('event_type','')} | {e.get('process_name','')} | {e.get('command_line','')[:120]}" for e in related_events[:10])}
+{chr(10).join(f"  [{e.get('_delta_secs',0):+.0f}s] {e.get('event_type','')} | {e.get('process_name','')} | {(e.get('command_line') or '')[:120]}" for e in related_events[:10]) or '  (none)'}
 
 Provide a concise security analysis in this exact JSON format:
 {{
@@ -1307,31 +1519,95 @@ Provide a concise security analysis in this exact JSON format:
 }}
 Return ONLY the JSON object, no markdown fences."""
 
+
+def _call_claude_analysis(alert: dict, related_events: list) -> dict:
+    """Blocking call to the Claude API — always run this via
+    asyncio.get_event_loop().run_in_executor() / asyncio.to_thread(), never
+    awaited directly, so it can't stall the event loop. Raises on any
+    failure; callers decide how to surface that (HTTPException for the
+    manual endpoint, a quiet skip for the background auto-trigger)."""
+    import urllib.request
+    prompt = _build_analysis_prompt(alert, related_events)
+    req_data = json.dumps({
+        "model": "claude-sonnet-4-6",
+        "max_tokens": 1000,
+        "messages": [{"role": "user", "content": prompt}],
+    }).encode()
+    req = urllib.request.Request(
+        "https://api.anthropic.com/v1/messages",
+        data=req_data,
+        headers={
+            "Content-Type":      "application/json",
+            "x-api-key":         ANTHROPIC_API_KEY,
+            "anthropic-version": "2023-06-01",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        result = json.loads(resp.read())
+    raw_text = result["content"][0]["text"]
+    return json.loads(raw_text)
+
+
+async def _auto_generate_ai_analysis(alert: dict):
+    """Fire-and-forget task kicked off right after a new alert is first
+    persisted (see get_all_alerts). Runs the same analysis as the manual
+    'Regenerate AI Analysis' button, but automatically and exactly once —
+    the result is written back onto the alert object in Oracle so every
+    analyst sees it immediately with zero button-clicks and zero repeat
+    API cost. Never raises out of this task: a failure here should not be
+    visible anywhere except the server log, since Layer 1 (enrich_alert)
+    has already given the alert usable baseline detail regardless."""
     try:
-        import urllib.request
-        req_data = json.dumps({
-            "model": "claude-sonnet-4-6",
-            "max_tokens": 1000,
-            "messages": [{"role": "user", "content": prompt}],
-        }).encode()
-        req = urllib.request.Request(
-            "https://api.anthropic.com/v1/messages",
-            data=req_data,
-            headers={
-                "Content-Type":      "application/json",
-                "x-api-key":         ANTHROPIC_API_KEY,
-                "anthropic-version": "2023-06-01",
-            },
-        )
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            result = json.loads(resp.read())
-        raw_text = result["content"][0]["text"]
-        analysis = json.loads(raw_text)
-        return JSONResponse({"analysis": analysis})
-    except json.JSONDecodeError as e:
-        return JSONResponse({"analysis": {"summary": raw_text, "error": "Could not parse structured response"}})
+        ctx = _alert_investigation_context(alert, alert.get("site_name"), alert.get("hostname"))
+        loop = asyncio.get_event_loop()
+        analysis = await loop.run_in_executor(None, _call_claude_analysis, alert, ctx["related_events"])
+        client = s3(commander=True)
+        if not client:
+            return
+        current, site_name, hostname = _find_alert(alert["id"], alert.get("site_name"), alert.get("hostname"))
+        if not current or not site_name or not hostname:
+            return
+        current["ai_analysis"] = analysis
+        current["ai_analysis_generated_at"] = datetime.datetime.utcnow().isoformat()
+        s3_put(client, f"{ALERTS_PREFIX}{site_name}/{hostname}/{current['id']}.json", current)
+        cache_bust("alerts")
+    except Exception as e:
+        print(f"[ai] auto AI analysis failed for alert {alert.get('id')}: {e}")
+
+
+@app.post("/api/ai/analyze-alert")
+async def ai_analyze_alert(request: Request, user=Depends(require_perm("alerts"))):
+    """Runs (or re-runs) Claude analysis for one alert BY ID and persists
+    the result onto it — this is what the dashboard's 'Analyze with AI' /
+    'Regenerate AI Analysis' button calls. Requires ANTHROPIC_API_KEY on
+    Render. For the fully automatic version that runs once when an alert
+    is first created, see _auto_generate_ai_analysis above."""
+    if not ANTHROPIC_API_KEY:
+        raise HTTPException(503, "ANTHROPIC_API_KEY not configured on this server. "
+                                  "Add it as a Render environment variable to enable AI analysis.")
+    body = await request.json()
+    alert_id = body.get("alert_id")
+    if not alert_id:
+        raise HTTPException(400, "alert_id required")
+    alert, site_name, hostname = _find_alert(alert_id, body.get("site_name"), body.get("hostname"))
+    if alert is None:
+        raise HTTPException(404, f"Alert {alert_id} not found")
+    ctx = _alert_investigation_context(alert, site_name, hostname)
+    try:
+        loop = asyncio.get_event_loop()
+        analysis = await loop.run_in_executor(None, _call_claude_analysis, alert, ctx["related_events"])
+    except json.JSONDecodeError:
+        raise HTTPException(502, "AI analysis returned an unparseable response — try again")
     except Exception as e:
         raise HTTPException(500, f"AI analysis failed: {e}")
+
+    client = s3(commander=True)
+    if client and site_name and hostname:
+        alert["ai_analysis"] = analysis
+        alert["ai_analysis_generated_at"] = datetime.datetime.utcnow().isoformat()
+        s3_put(client, f"{ALERTS_PREFIX}{site_name}/{hostname}/{alert['id']}.json", alert)
+        cache_bust("alerts")
+    return JSONResponse({"analysis": analysis, "alert": alert})
 
 
 # ── Enforcement, Rules, Commands (unchanged, carried forward) ─────────────────

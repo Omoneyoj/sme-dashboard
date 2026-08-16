@@ -714,9 +714,46 @@ async function oA(js){
   }catch(ex){}
 }
 
+// Simple, dependency-free "attack chain" visual — Host -> Process ->
+// Detection -> MITRE Technique, each hop labeled, technique linked out to
+// attack.mitre.org. Not a full graph engine, but the same core idea as an
+// NDR's knowledge graph: show the entities and how they relate at a glance.
+function renderKGraph(a){
+  if(!a.hostname&&!a.mitre_technique_id&&!a.threat_name)return '';
+  const nodes=[{label:a.hostname||'Unknown Host',sub:a.site_name||'',color:'var(--red)'}];
+  if(a.process_name)nodes.push({label:a.process_name,sub:'Process',color:'var(--blue)',edge:'executed'});
+  nodes.push({label:a.threat_name||'Detection',sub:a.source||'',color:'var(--amber)',edge:nodes.length>1?'triggered':'raised'});
+  if(a.mitre_technique_id)nodes.push({label:`${a.mitre_technique_id}${a.mitre_technique_name?' - '+a.mitre_technique_name:''}`,sub:'MITRE ATT&CK',color:'var(--purple)',edge:'maps to',link:a.mitre_url});
+  const hop=e=>`<div style="display:flex;flex-direction:column;align-items:center;color:var(--muted);font-size:10px;padding:2px 0 2px 14px">
+<div style="width:1px;height:10px;background:var(--border)"></div>${esc(e||'')}<div style="width:1px;height:10px;background:var(--border)"></div>&#x2193;</div>`;
+  const box=n=>`<div style="display:inline-block;border:1px solid ${n.color};background:${n.color}18;color:${n.color};border-radius:6px;padding:6px 12px;font-size:12px;font-weight:600;margin-left:14px">
+${n.link?`<a href="${esc(n.link)}" target="_blank" rel="noopener" style="color:inherit;text-decoration:none">`:''}${esc(n.label)}${n.link?' &#x2197;':''}${n.link?'</a>':''}
+${n.sub?`<div style="font-size:10px;font-weight:400;opacity:.8;margin-top:2px">${esc(n.sub)}</div>`:''}</div>`;
+  const parts=nodes.map((n,i)=>(i>0?hop(n.edge):'')+box(n));
+  return `<div class="prop" style="margin-bottom:12px"><div class="pl">Attack Chain</div><div style="margin-top:8px">${parts.join('')}</div></div>`;
+}
+
+function renderAIBlock(a){
+  const an=a.ai_analysis;
+  if(!an||!Object.keys(an).length)return '';
+  return `<div class="ai-panel" style="margin-bottom:12px">
+<div style="font-size:11px;color:var(--purple);font-weight:600;margin-bottom:8px">&#x1F916; AI Incident Analysis${a.ai_analysis_generated_at?` <span style="color:var(--muted);font-weight:400">&middot; ${fmtAge(a.ai_analysis_generated_at)}</span>`:''}</div>
+<div style="font-size:12px;line-height:1.6;color:var(--muted2)">
+${an.summary?`<p>${esc(an.summary)}</p>`:''}
+${an.attack_stage?`<p style="margin-top:8px"><strong>Attack Stage:</strong> ${esc(an.attack_stage)}</p>`:''}
+${an.severity_assessment?`<p style="margin-top:8px"><strong>Risk:</strong> ${esc(an.severity_assessment)}</p>`:''}
+${an.mitre_techniques?.length?`<p style="margin-top:8px"><strong>MITRE:</strong> ${an.mitre_techniques.map(t=>`<span class="badge b-purple" style="margin-right:4px">${esc(t)}</span>`).join('')}</p>`:''}
+${an.recommended_actions?.length?`<p style="margin-top:8px"><strong>Actions:</strong></p><ul style="margin:6px 0 6px 14px">${an.recommended_actions.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>`:''}
+${an.indicators_to_check?.length?`<p style="margin-top:8px"><strong>Indicators to Check:</strong></p><ul style="margin:6px 0 6px 14px">${an.indicators_to_check.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>`:''}
+${an.risk_to_business?`<p style="margin-top:8px"><strong>Business Risk:</strong> ${esc(an.risk_to_business)}</p>`:''}
+</div></div>`;
+}
+
 function renderAB(a){
   const cA=_user?.perms?.includes('alerts');
-  return `<div class="grid2" style="margin-bottom:14px">
+  const hasAI=a.ai_analysis&&Object.keys(a.ai_analysis).length;
+  return `${a.description?`<div class="prop" style="margin-bottom:12px"><div class="pl">Description</div><div class="pv" style="font-size:13px;line-height:1.5;margin-top:4px">${esc(a.description)}</div></div>`:''}
+<div class="grid2" style="margin-bottom:14px">
 <div class="prop"><div class="pl">Status</div><div class="pv"><span class="badge ${stC(a.status||'New')}">${a.status||'New'}</span></div></div>
 <div class="prop"><div class="pl">Severity</div><div class="pv"><span class="badge ${sC(a.severity)}">${a.severity||'?'}</span></div></div>
 <div class="prop"><div class="pl">Source</div><div class="pv" style="font-size:13px">${sI(a.source)} ${esc(a.source||'?')}</div></div>
@@ -725,15 +762,19 @@ function renderAB(a){
 <div class="prop"><div class="pl">Detected</div><div class="pv" style="font-size:12px">${fmtTS(a.detected_at||a.time)}</div></div>
 ${a.process_name?`<div class="prop"><div class="pl">Process</div><div class="pv" style="font-size:12px;font-family:monospace">${esc(a.process_name)}</div></div>`:''}
 ${a.action?`<div class="prop"><div class="pl">Action</div><div class="pv" style="font-size:12px">${esc(a.action)}</div></div>`:''}
+${a.mitre_technique_id?`<div class="prop"><div class="pl">MITRE ATT&amp;CK</div><div class="pv" style="font-size:12px">${a.mitre_url?`<a href="${esc(a.mitre_url)}" target="_blank" rel="noopener" style="text-decoration:none">`:''}<span class="badge b-purple">${esc(a.mitre_technique_id)}</span> ${esc(a.mitre_technique_name||'')}${a.mitre_url?' &#x2197;</a>':''}</div></div>`:''}
 </div>
 ${a.command_line?`<div class="prop" style="margin-bottom:12px"><div class="pl">Command Line</div><div style="font-size:11px;font-family:monospace;word-break:break-all;background:var(--bg);padding:8px;border-radius:6px;margin-top:4px">${esc(a.command_line.substring(0,600))}</div></div>`:''}
+${renderKGraph(a)}
+${a.next_steps?.length?`<div class="prop" style="margin-bottom:12px"><div class="pl">Next Steps</div><ul style="margin:8px 0 0 16px;font-size:12px;line-height:1.7;color:var(--muted2)">${a.next_steps.map(s=>`<li>${esc(s)}</li>`).join('')}</ul></div>`:''}
+<div id="ai-block-${eA(a.id)}">${renderAIBlock(a)}</div>
 ${cA?`<div class="btn-row" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
 <button class="btn btn-p" onclick="updAS('${eA(a.id)}','Open')">Mark Open</button>
 <button class="btn btn-s" onclick="updAS('${eA(a.id)}','Closed')">Mark Closed</button>
 <button class="btn btn-g" onclick="updAS('${eA(a.id)}','New')">Mark New</button>
 ${a.hostname&&a.site_name?`<button class="btn btn-g" onclick="openDev('${eA(a.site_name)}','${eA(a.hostname)}')">View Device</button>`:''}
-<button class="btn btn-pu" onclick="aiAnalyze('${eA(a.id)}')" id="ai-btn-${eA(a.id)}">&#x1F916; Analyze with AI</button>
-</div><div id="ai-res-${eA(a.id)}"></div>`:''}`;
+<button class="btn btn-pu" onclick="aiAnalyze('${eA(a.id)}')" id="ai-btn-${eA(a.id)}">&#x1F916; ${hasAI?'Regenerate AI Analysis':'Analyze with AI'}</button>
+</div>`:''}`;
 }
 
 function renderAF(a,ctx){
@@ -755,27 +796,21 @@ ${sib.map(s=>`<div style="display:flex;justify-content:space-between;font-size:1
 }
 
 async function aiAnalyze(id){
-  const btn=document.getElementById('ai-btn-'+id);const res=document.getElementById('ai-res-'+id);
-  if(btn){btn.disabled=true;btn.textContent='&#x1F916; Analyzing...';}
+  const btn=document.getElementById('ai-btn-'+id);
+  const block=document.getElementById('ai-block-'+id);
+  const origLabel=btn?btn.textContent:'';
+  let success=false;
+  if(btn){btn.disabled=true;btn.textContent='\u{1F916} Analyzing...';}
   try{
-    const aRes=await api('/api/alerts');const alertD=aRes.ok?(await aRes.json()).alerts?.find(a=>a.id===id):null;
-    const ctxR=await api(`/api/alerts/${encodeURIComponent(id)}/context`);const ctx=ctxR.ok?await ctxR.json():{};
-    const r=await api('/api/ai/analyze-alert',{method:'POST',body:JSON.stringify({alert:alertD||{id},related_events:ctx.related_events||[]})});
-    if(r.status===503){if(res)res.innerHTML='<div style="color:var(--muted);font-size:12px;margin-top:8px">Set ANTHROPIC_API_KEY on Render to enable AI analysis.</div>';return;}
-    if(!r.ok){if(res)res.innerHTML='<div style="color:var(--red);font-size:12px;margin-top:8px">AI analysis failed.</div>';return;}
-    const d=await r.json();const an=d.analysis||{};
-    if(res)res.innerHTML=`<div class="ai-panel">
-<div style="font-size:11px;color:var(--purple);font-weight:600;margin-bottom:8px">&#x1F916; AI Incident Analysis</div>
-<div style="font-size:12px;line-height:1.6;color:var(--muted2)">
-${an.summary?`<p>${esc(an.summary)}</p>`:''}
-${an.attack_stage?`<p style="margin-top:8px"><strong>Attack Stage:</strong> ${esc(an.attack_stage)}</p>`:''}
-${an.severity_assessment?`<p style="margin-top:8px"><strong>Risk:</strong> ${esc(an.severity_assessment)}</p>`:''}
-${an.mitre_techniques?.length?`<p style="margin-top:8px"><strong>MITRE:</strong> ${an.mitre_techniques.map(t=>`<span class="badge b-purple" style="margin-right:4px">${esc(t)}</span>`).join('')}</p>`:''}
-${an.recommended_actions?.length?`<p style="margin-top:8px"><strong>Actions:</strong></p><ul style="margin:6px 0 6px 14px">${an.recommended_actions.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>`:''}
-${an.risk_to_business?`<p style="margin-top:8px"><strong>Business Risk:</strong> ${esc(an.risk_to_business)}</p>`:''}
-</div></div>`;
-  }catch(ex){if(res)res.innerHTML=`<div style="color:var(--red);font-size:12px;margin-top:8px">Error: ${ex}</div>`;}
-  finally{if(btn){btn.disabled=false;btn.textContent='&#x1F916; Analyze with AI';}}
+    const r=await api('/api/ai/analyze-alert',{method:'POST',body:JSON.stringify({alert_id:id})});
+    if(r.status===503){if(block)block.innerHTML='<div style="color:var(--muted);font-size:12px;margin:8px 0">Set ANTHROPIC_API_KEY on Render to enable AI analysis.</div>';return;}
+    if(!r.ok){if(block)block.innerHTML='<div style="color:var(--red);font-size:12px;margin:8px 0">AI analysis failed.</div>';return;}
+    const d=await r.json();
+    const idx=_A.findIndex(x=>x.id===id);if(idx>=0)_A[idx]=Object.assign({},_A[idx],d.alert);
+    if(block)block.innerHTML=renderAIBlock(d.alert||{});
+    success=true;
+  }catch(ex){if(block)block.innerHTML=`<div style="color:var(--red);font-size:12px;margin:8px 0">Error: ${ex}</div>`;}
+  finally{if(btn){btn.disabled=false;btn.textContent=success?'\u{1F916} Regenerate AI Analysis':origLabel;}}
 }
 
 async function updAS(id,status){
