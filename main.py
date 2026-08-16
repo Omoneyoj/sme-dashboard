@@ -56,6 +56,20 @@ SETTINGS_KEY    = "config/dashboard_settings.json"
 AGENT_SCHEDULE_KEY = "config/agent_schedule.json"
 RETENTION_POLICY_KEY   = "config/retention_policy.json"
 RETENTION_LAST_RUN_KEY = "config/retention_last_run.json"
+AI_SETTINGS_KEY = "config/ai_settings.json"
+
+# Model choices surfaced in the Settings UI dropdown. Anthropic's current
+# lineup as of this build — see https://docs.claude.com/en/docs/about-claude/models
+# for the authoritative, up-to-date list; verify there before adding a new
+# entry, since model strings change with each release and a stale one will
+# just fail at call time with a clear API error.
+AI_MODEL_CHOICES = [
+    {"id": "claude-sonnet-5",              "label": "Claude Sonnet 5 (recommended — balanced quality/cost)"},
+    {"id": "claude-opus-4-8",              "label": "Claude Opus 4.8 (most capable, higher cost)"},
+    {"id": "claude-haiku-4-5-20251001",    "label": "Claude Haiku 4.5 (fastest, cheapest)"},
+    {"id": "claude-fable-5",               "label": "Claude Fable 5 (frontier — Mythos-tier, may require Anthropic access)"},
+]
+DEFAULT_AI_SETTINGS = {"model": "claude-sonnet-5", "api_key": ""}
 
 ALLOWED_COMMANDS = {
     "force_audit", "force_report", "enable_enforcement", "disable_enforcement",
@@ -753,6 +767,36 @@ def _get_agent_schedule() -> dict:
     merged["updated_at"] = stored.get("updated_at")
     merged["updated_by"] = stored.get("updated_by")
     return merged
+
+
+def _get_ai_settings(redact: bool = True) -> dict:
+    """Merges DEFAULT_AI_SETTINGS with whatever's saved to Oracle. With
+    redact=True (the GET-endpoint default) api_key is stripped and replaced
+    with a has_api_key flag, same write-only/sticky pattern as the
+    retention policy's move-destination secret — never sent back to the
+    browser after being saved."""
+    client = s3()
+    stored = (s3_get(client, AI_SETTINGS_KEY) or {}) if client else {}
+    merged = dict(DEFAULT_AI_SETTINGS)
+    merged.update({k: v for k, v in stored.items() if k in DEFAULT_AI_SETTINGS})
+    merged["updated_at"] = stored.get("updated_at")
+    merged["updated_by"] = stored.get("updated_by")
+    if redact:
+        merged["has_api_key"] = bool(merged.get("api_key")) or bool(ANTHROPIC_API_KEY)
+        merged["api_key"] = ""
+    return merged
+
+
+def _resolve_ai_config() -> tuple:
+    """Returns (model, api_key) to actually use for a Claude API call. A
+    key/model saved in Settings takes precedence over the ANTHROPIC_API_KEY
+    Render environment variable, so an admin can configure or rotate the
+    key from the dashboard without touching Render at all — but the env
+    var still works as a zero-config default if nothing's been saved."""
+    settings = _get_ai_settings(redact=False)
+    model = (settings.get("model") or "").strip() or DEFAULT_AI_SETTINGS["model"]
+    api_key = settings.get("api_key") or ANTHROPIC_API_KEY
+    return model, api_key
 
 
 def _get_retention_policy(redact: bool = True) -> dict:
@@ -1594,16 +1638,19 @@ Provide a concise security analysis in this exact JSON format:
 Return ONLY the JSON object, no markdown fences."""
 
 
-def _call_claude_analysis(alert: dict, related_events: list) -> dict:
+def _call_claude_analysis(alert: dict, related_events: list, model: str, api_key: str) -> dict:
     """Blocking call to the Claude API — always run this via
     asyncio.get_event_loop().run_in_executor() / asyncio.to_thread(), never
-    awaited directly, so it can't stall the event loop. Raises on any
+    awaited directly, so it can't stall the event loop. model/api_key come
+    from _resolve_ai_config() (Settings override, falling back to the
+    ANTHROPIC_API_KEY env var) rather than being hardcoded, so an admin can
+    change either from the dashboard without a redeploy. Raises on any
     failure; callers decide how to surface that (HTTPException for the
     manual endpoint, a quiet skip for the background auto-trigger)."""
     import urllib.request
     prompt = _build_analysis_prompt(alert, related_events)
     req_data = json.dumps({
-        "model": "claude-sonnet-4-6",
+        "model": model,
         "max_tokens": 1000,
         "messages": [{"role": "user", "content": prompt}],
     }).encode()
@@ -1612,7 +1659,7 @@ def _call_claude_analysis(alert: dict, related_events: list) -> dict:
         data=req_data,
         headers={
             "Content-Type":      "application/json",
-            "x-api-key":         ANTHROPIC_API_KEY,
+            "x-api-key":         api_key,
             "anthropic-version": "2023-06-01",
         },
     )
@@ -1632,9 +1679,12 @@ async def _auto_generate_ai_analysis(alert: dict):
     visible anywhere except the server log, since Layer 1 (enrich_alert)
     has already given the alert usable baseline detail regardless."""
     try:
+        model, api_key = _resolve_ai_config()
+        if not api_key:
+            return
         ctx = _alert_investigation_context(alert, alert.get("site_name"), alert.get("hostname"))
         loop = asyncio.get_event_loop()
-        analysis = await loop.run_in_executor(None, _call_claude_analysis, alert, ctx["related_events"])
+        analysis = await loop.run_in_executor(None, _call_claude_analysis, alert, ctx["related_events"], model, api_key)
         client = s3(commander=True)
         if not client:
             return
@@ -1653,12 +1703,14 @@ async def _auto_generate_ai_analysis(alert: dict):
 async def ai_analyze_alert(request: Request, user=Depends(require_perm("alerts"))):
     """Runs (or re-runs) Claude analysis for one alert BY ID and persists
     the result onto it — this is what the dashboard's 'Analyze with AI' /
-    'Regenerate AI Analysis' button calls. Requires ANTHROPIC_API_KEY on
+    'Regenerate AI Analysis' button calls. Requires either an API key
+    saved in Settings (AI Analysis card) or ANTHROPIC_API_KEY set on
     Render. For the fully automatic version that runs once when an alert
     is first created, see _auto_generate_ai_analysis above."""
-    if not ANTHROPIC_API_KEY:
-        raise HTTPException(503, "ANTHROPIC_API_KEY not configured on this server. "
-                                  "Add it as a Render environment variable to enable AI analysis.")
+    model, api_key = _resolve_ai_config()
+    if not api_key:
+        raise HTTPException(503, "No Anthropic API key configured. Add one under Settings > AI Analysis, "
+                                  "or set ANTHROPIC_API_KEY as a Render environment variable.")
     body = await request.json()
     alert_id = body.get("alert_id")
     if not alert_id:
@@ -1669,7 +1721,7 @@ async def ai_analyze_alert(request: Request, user=Depends(require_perm("alerts")
     ctx = _alert_investigation_context(alert, site_name, hostname)
     try:
         loop = asyncio.get_event_loop()
-        analysis = await loop.run_in_executor(None, _call_claude_analysis, alert, ctx["related_events"])
+        analysis = await loop.run_in_executor(None, _call_claude_analysis, alert, ctx["related_events"], model, api_key)
     except json.JSONDecodeError:
         raise HTTPException(502, "AI analysis returned an unparseable response — try again")
     except Exception as e:
@@ -2190,6 +2242,45 @@ async def run_retention_policy_now(user=Depends(require_perm("settings"))):
     return JSONResponse(result)
 
 
+@app.get("/api/ai-settings")
+async def get_ai_settings(request: Request):
+    """Returns the AI model/key configuration with api_key redacted (see
+    _get_ai_settings), plus the list of model choices the Settings UI
+    should offer in its dropdown."""
+    user = await get_user(request)
+    if not user:
+        raise HTTPException(401, "Authentication required")
+    settings = _get_ai_settings(redact=True)
+    settings["model_choices"] = AI_MODEL_CHOICES
+    return JSONResponse(settings)
+
+
+@app.put("/api/ai-settings")
+async def update_ai_settings(request: Request, user=Depends(require_perm("settings"))):
+    """Saves the model string and/or API key to Oracle. api_key is
+    write-only and sticky: an omitted or blank value means 'keep the
+    existing one', exactly like the retention policy's move-destination
+    secret — the browser never sees a previously-saved key back."""
+    body = await request.json()
+    current = _get_ai_settings(redact=False)
+    if "model" in body:
+        model = (body["model"] or "").strip()
+        if not model:
+            raise HTTPException(400, "'model' cannot be blank")
+        current["model"] = model
+    if body.get("api_key"):
+        current["api_key"] = body["api_key"].strip()
+    current["updated_at"] = datetime.datetime.utcnow().isoformat()
+    current["updated_by"] = user["username"]
+    client = s3(commander=True)
+    if not client:
+        raise HTTPException(503, "Commander not configured")
+    s3_put(client, AI_SETTINGS_KEY, current)
+    out = _get_ai_settings(redact=True)
+    out["model_choices"] = AI_MODEL_CHOICES
+    return JSONResponse(out)
+
+
 @app.post("/api/alerts/webhook")
 async def alert_webhook(request: Request, background_tasks: BackgroundTasks):
     alert = await request.json()
@@ -2200,10 +2291,11 @@ async def alert_webhook(request: Request, background_tasks: BackgroundTasks):
 
 @app.get("/health")
 async def health():
+    _, resolved_key = _resolve_ai_config()
     return {"status": "ok",
             "oracle": bool(ORACLE_S3_ENDPOINT and ORACLE_ACCESS_KEY and ORACLE_BUCKET),
             "commander": bool(ORACLE_COMMANDER_ACCESS_KEY and ORACLE_COMMANDER_SECRET_KEY),
-            "ai": bool(ANTHROPIC_API_KEY)}
+            "ai": bool(resolved_key)}
 
 
 @app.get("/", response_class=HTMLResponse)

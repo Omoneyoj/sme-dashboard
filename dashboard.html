@@ -1061,10 +1061,11 @@ async function delUser(uname){
 }
 
 async function renderSettings(el){
-  const [r,ar,rp]=await Promise.all([api('/api/settings'),api('/api/agent-schedule'),api('/api/retention-policy')]);
+  const [r,ar,rp,ai]=await Promise.all([api('/api/settings'),api('/api/agent-schedule'),api('/api/retention-policy'),api('/api/ai-settings')]);
   const s=r.ok?await r.json():{};
   const a=ar.ok?await ar.json():{};
   const p=rp.ok?await rp.json():{};
+  const ais=ai.ok?await ai.json():{};
   const isAdmin=_user?.role==='admin';
   const chk=(id,checked)=>`<input type="checkbox" id="${id}" ${checked?'checked':''} ${isAdmin?'':'disabled'} style="accent-color:var(--blue);width:14px;height:14px">`;
   const numRow=(id,label,val,note)=>`<div class="ff"><div class="fl">${label}</div><input id="${id}" class="fip" type="number" min="1" value="${val}" ${isAdmin?'':'disabled'}>${note?`<div style="font-size:11px;color:var(--muted);margin-top:3px">${note}</div>`:''}</div>`;
@@ -1173,7 +1174,50 @@ ${isAdmin?`<div class="btn-row" style="margin-top:14px">
 ${p.updated_at?`<div style="font-size:11px;color:var(--muted);margin-top:8px">Last saved ${fmtAge(p.updated_at)} by ${esc(p.updated_by||'-')}</div>`:''}
 ${lr?`<div style="font-size:11px;color:var(--muted);margin-top:8px">Last cloud sweep: ${fmtAge(lr.ran_at)} (${esc(lr.trigger||'-')}, ${esc(lr.status||'-')})${lrSummary?`<div style="margin-top:4px">${lrSummary}</div>`:''}</div>`:'<div style="font-size:11px;color:var(--muted);margin-top:8px">No cloud sweep has run yet.</div>'}
 </div>
+
+<div class="card">
+<div class="card-header"><div class="card-title">AI Analysis</div></div>
+<div style="font-size:11px;color:var(--muted);margin-bottom:10px">Controls which Claude model powers "Analyze with AI" on alerts, and where the API key comes from. If nothing's saved here, the platform falls back to the <code>ANTHROPIC_API_KEY</code> environment variable on Render (if set) &mdash; a key saved here always takes priority.</div>
+<div class="ff" style="margin-bottom:6px">
+<div class="fl">Model</div>
+<select id="ais-model" class="fsel" ${isAdmin?'':'disabled'} onchange="tglAisCustom()">
+${(ais.model_choices||[]).map(m=>`<option value="${esc(m.id)}" ${m.id===ais.model?'selected':''}>${esc(m.label)}</option>`).join('')}
+<option value="__custom__" ${(ais.model_choices||[]).every(m=>m.id!==ais.model)?'selected':''}>Custom model string&hellip;</option>
+</select>
+</div>
+<div id="ais-custom-wrap" class="ff" style="margin-bottom:12px;display:${(ais.model_choices||[]).every(m=>m.id!==ais.model)?'block':'none'}">
+<div class="fl">Custom Model String</div>
+<input id="ais-model-custom" class="fip" value="${(ais.model_choices||[]).every(m=>m.id!==ais.model)?esc(ais.model||''):''}" placeholder="e.g. claude-opus-4-8" ${isAdmin?'':'disabled'}>
+<div style="font-size:11px;color:var(--muted);margin-top:3px">For a model not in the list above &mdash; verify the exact model string in Anthropic's docs before saving; an invalid string fails at analysis time, not at save time.</div>
+</div>
+<div class="ff" style="margin-bottom:4px">
+<div class="fl">API Key</div>
+<input id="ais-key" class="fip" type="password" placeholder="${ais.has_api_key?'Unchanged (a key is already configured)':'Not configured — paste an Anthropic API key'}" ${isAdmin?'':'disabled'}>
+<div style="font-size:11px;color:var(--muted);margin-top:3px">Leave blank to keep the current key. Never shown back once saved.</div>
+</div>
+<div style="font-size:11px;margin-bottom:12px">${ais.has_api_key?'<span style="color:var(--green)">&#x2713; A key is configured</span>':'<span style="color:var(--amber)">&#x26A0; No key configured &mdash; AI analysis is disabled</span>'}</div>
+${isAdmin?'<button class="btn btn-p" onclick="saveAiSettings()">Save AI Settings</button>':'<p style="font-size:12px;color:var(--muted)">Requires Admin role.</p>'}
+${ais.updated_at?`<div style="font-size:11px;color:var(--muted);margin-top:8px">Last saved ${fmtAge(ais.updated_at)} by ${esc(ais.updated_by||'-')}</div>`:''}
+</div>
 </div>`;
+}
+
+function tglAisCustom(){
+  const show=document.getElementById('ais-model')?.value==='__custom__';
+  const el=document.getElementById('ais-custom-wrap');
+  if(el)el.style.display=show?'block':'none';
+}
+
+async function saveAiSettings(){
+  const sel=document.getElementById('ais-model')?.value;
+  const model=sel==='__custom__'?(document.getElementById('ais-model-custom')?.value||'').trim():sel;
+  if(!model){alert('Model cannot be blank.');return;}
+  const body={model};
+  const key=(document.getElementById('ais-key')?.value||'').trim();
+  if(key)body.api_key=key;
+  const r=await api('/api/ai-settings',{method:'PUT',body:JSON.stringify(body)});
+  if(r.ok){alert('AI settings saved.');renderSettings(document.getElementById('content'));}
+  else{const d=await r.json().catch(()=>({detail:'Error'}));alert('Failed: '+d.detail);}
 }
 
 function tglRpDest(){
