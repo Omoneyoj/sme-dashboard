@@ -62,6 +62,11 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-seri
 .table-wrap{overflow-x:auto;}
 table{width:100%;border-collapse:collapse;font-size:12px;}
 th{text-align:left;padding:8px 12px;color:var(--muted);font-weight:500;font-size:11px;text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid var(--border);white-space:nowrap;}
+th.rz{position:relative;overflow:hidden;text-overflow:ellipsis;}
+.col-rz{position:absolute;top:0;right:-3px;width:7px;height:100%;cursor:col-resize;z-index:2;user-select:none;}
+.col-rz:hover,.col-rz.active{background:rgba(59,130,246,.35);}
+tr.cr-row{cursor:pointer;}
+tr.cr-row:hover td{background:var(--surface2);}
 td{padding:8px 12px;border-bottom:1px solid rgba(30,45,71,.5);vertical-align:middle;}
 tr:hover td{background:rgba(255,255,255,.015);}
 tr.cr{cursor:pointer;}
@@ -237,6 +242,12 @@ tr:hover .iac{opacity:1;}
     <div class="modal-hdr"><span class="modal-title" id="rm-t">Rule</span><button class="modal-x" onclick="cM('rm')">&#x2715;</button></div>
     <div class="modal-body" id="rm-b"></div>
     <div class="modal-foot"><button class="btn btn-g" onclick="cM('rm')">Cancel</button><button class="btn btn-p" onclick="saveRule()">Save Rule</button></div>
+  </div>
+</div>
+<div id="em" class="modal-overlay" style="display:none" onclick="cmo(event,'em')">
+  <div class="modal" style="max-width:700px" onclick="event.stopPropagation()">
+    <div class="modal-hdr"><span class="modal-title" id="em-t">Timeline Event</span><button class="modal-x" onclick="cM('em')">&#x2715;</button></div>
+    <div class="modal-body" id="em-b"></div>
   </div>
 </div>
 
@@ -496,12 +507,17 @@ ${cA?`<td class="iac"><button class="btn btn-g" style="font-size:10px;padding:3p
   renderTimelineTab();
 }
 
-// ── Device Timeline tab: table view with type/content/date-range filters + CSV export ──
+// ── Device Timeline tab: table view with type/content/date-range filters,
+// resizable columns, clickable rows (full detail modal) + CSV export ──
 let _TL=[],_TLdev={site:'',hostname:''},_tlF='',_tlType='',_tlStart='',_tlEnd='';
 const TL_ICON={process_creation:'&#x2699;',logon:'&#x1F511;',logon_failure:'&#x26A0;',logoff:'&#x1F6AA;',service_installed:'&#x1F6E0;',service_crash:'&#x1F4A5;',threat_detected:'&#x1F6A8;',rule_match:'&#x1F4CB;',usb_execution:'&#x1F4BE;',suspicious_process:'&#x1F534;',network_connection:'&#x1F310;',defender:'&#x1F6E1;'};
 const TL_COLOR={process_creation:'var(--blue)',logon:'var(--green)',logon_failure:'var(--red)',logoff:'var(--muted)',service_installed:'var(--amber)',service_crash:'var(--red)',threat_detected:'var(--red)',rule_match:'var(--amber)',usb_execution:'var(--amber)',suspicious_process:'var(--red)',network_connection:'var(--cyan)',defender:'var(--blue)'};
 const TL_SEARCH_FIELDS=['threat_name','process_name','command_line','path','user','parent_name','source_ip','remote_address','event_type'];
 const TL_CSV_COLS=['time','event_type','process_name','pid','parent_name','user','command_line','path','logon_type','source_ip','remote_address','remote_port','threat_name','severity','action'];
+// Column widths (px) — user-adjustable via drag handles, kept for the
+// rest of the session so re-filtering doesn't reset them.
+const TL_COLS=[{key:'time',label:'Time',w:130},{key:'type',label:'Type',w:150},{key:'desc',label:'Description',w:190},{key:'pid',label:'PID',w:75},{key:'user',label:'User',w:170},{key:'detail',label:'Detail',w:300},{key:'sev',label:'Severity/Action',w:120}];
+let _tlColW=null;
 
 function tlFiltered(){
   let rows=_TL.slice();
@@ -516,6 +532,7 @@ function renderTimelineTab(){
   const sub=document.getElementById('sub-dt');
   if(!sub)return;
   if(!_TL.length){sub.innerHTML='<div class="empty" style="padding:24px">No timeline yet. Collects every 30 min after startup.</div>';return;}
+  if(!_tlColW)_tlColW=Object.fromEntries(TL_COLS.map(c=>[c.key,c.w]));
   const rows=tlFiltered();
   const types=[...new Set(_TL.map(e=>e.event_type||e.source||'event'))].sort();
   const active=_tlF||_tlType||_tlStart||_tlEnd;
@@ -523,14 +540,17 @@ function renderTimelineTab(){
     const et=e.event_type||e.source||'event';const ic=TL_ICON[et]||'&#x25CF;';const co=TL_COLOR[et]||'var(--muted)';
     const desc=e.threat_name||e.process_name||e.user||'(event)';
     const detail=e.command_line||e.path||e.remote_address||e.parent_name||'';
-    return `<tr>
-<td style="font-size:11px;white-space:nowrap;color:var(--muted)">${fmtTS(e.time)}</td>
-<td style="white-space:nowrap;font-size:11px"><span style="color:${co}">${ic}</span> ${esc(et)}</td>
-<td style="font-size:12px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(desc)}</td>
-<td style="font-size:11px">${e.pid??'-'}</td>
-<td style="font-size:11px;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(e.user||'-')}</td>
-<td style="font-size:11px;font-family:monospace;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(detail)}">${esc(detail)}</td>
-<td style="font-size:11px">${esc(e.severity||e.action||'-')}</td></tr>`;};
+    const user=e.user||'-';
+    return `<tr class="cr-row" onclick='oTE(${JSON.stringify(JSON.stringify(e))})'>
+<td style="font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--muted)">${fmtTS(e.time)}</td>
+<td style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:11px"><span style="color:${co}">${ic}</span> ${esc(et)}</td>
+<td style="font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(desc)}">${esc(desc)}</td>
+<td style="font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${e.pid??'-'}</td>
+<td style="font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(user)}">${esc(user)}</td>
+<td style="font-size:11px;font-family:monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(detail)}">${esc(detail)}</td>
+<td style="font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(e.severity||e.action||'-')}</td></tr>`;};
+  const colgroup=`<colgroup>${TL_COLS.map(c=>`<col style="width:${_tlColW[c.key]}px">`).join('')}</colgroup>`;
+  const thead=`<thead><tr>${TL_COLS.map((c,i)=>`<th class="rz">${c.label}${i<TL_COLS.length-1?`<div class="col-rz" data-col="${c.key}"></div>`:''}</th>`).join('')}</tr></thead>`;
   sub.innerHTML=`<div class="filter-bar">
 <input class="fi" value="${esc(_tlF)}" placeholder="Search process, user, path, command..." style="width:220px" oninput="_tlF=this.value;renderTimelineTab()">
 <select class="fs" onchange="_tlType=this.value;renderTimelineTab()">
@@ -542,8 +562,62 @@ function renderTimelineTab(){
 ${active?`<button class="btn btn-g" style="font-size:11px" onclick="_tlF='';_tlType='';_tlStart='';_tlEnd='';renderTimelineTab()">&#x2715; Clear</button>`:''}
 <button class="btn btn-g" style="font-size:11px;margin-left:auto" onclick="exportTimelineCsv()">&#x2913; Export CSV</button>
 </div>
-<div style="font-size:11px;color:var(--muted);margin-bottom:8px">${rows.length} of ${_TL.length} event(s)${active?' (filtered)':''}</div>
-${!rows.length?'<div class="empty" style="padding:24px">No events match filters</div>':`<div class="table-wrap"><table><thead><tr><th>Time</th><th>Type</th><th>Description</th><th>PID</th><th>User</th><th>Detail</th><th>Severity/Action</th></tr></thead><tbody>${rows.slice().reverse().map(tRow).join('')}</tbody></table></div>`}`;
+<div style="font-size:11px;color:var(--muted);margin-bottom:8px">${rows.length} of ${_TL.length} event(s)${active?' (filtered)':''} &mdash; drag a column edge to resize, click a row for full detail</div>
+${!rows.length?'<div class="empty" style="padding:24px">No events match filters</div>':`<div class="table-wrap"><table style="table-layout:fixed;width:100%">${colgroup}${thead}<tbody>${rows.slice().reverse().map(tRow).join('')}</tbody></table></div>`}`;
+  if(rows.length)initTlResize();
+}
+
+function initTlResize(){
+  const sub=document.getElementById('sub-dt');
+  sub.querySelectorAll('.col-rz').forEach(handle=>{
+    handle.addEventListener('mousedown',ev=>{
+      ev.preventDefault();ev.stopPropagation();
+      const key=handle.dataset.col;
+      const th=handle.closest('th');
+      const startX=ev.clientX;const startW=th.offsetWidth;
+      handle.classList.add('active');
+      const onMove=mv=>{
+        const w=Math.max(50,startW+(mv.clientX-startX));
+        _tlColW[key]=w;
+        const idx=TL_COLS.findIndex(c=>c.key===key);
+        const col=sub.querySelectorAll('col')[idx];
+        if(col)col.style.width=w+'px';
+      };
+      const onUp=()=>{
+        handle.classList.remove('active');
+        document.removeEventListener('mousemove',onMove);
+        document.removeEventListener('mouseup',onUp);
+      };
+      document.addEventListener('mousemove',onMove);
+      document.addEventListener('mouseup',onUp);
+    });
+  });
+}
+
+function oTE(js){
+  const e=JSON.parse(js);
+  const et=e.event_type||e.source||'event';
+  document.getElementById('em-t').textContent=et;
+  document.getElementById('em').style.display='flex';
+  const rows=[
+    ['Time',fmtTS(e.time)],
+    ['Type',et],
+    ['Description',e.threat_name||e.process_name||e.user||'(event)'],
+    ['PID',e.pid!=null?String(e.pid):''],
+    ['Parent Process',e.parent_name||''],
+    ['User',e.user||''],
+    ['Path',e.path||''],
+    ['Logon Type',e.logon_type||''],
+    ['Source IP',e.source_ip||''],
+    ['Remote Address',e.remote_address?`${e.remote_address}${e.remote_port?':'+e.remote_port:''}`:''],
+    ['Threat Name',e.threat_name||''],
+    ['Severity',e.severity||''],
+    ['Action',e.action||''],
+  ].filter(([,v])=>v);
+  document.getElementById('em-b').innerHTML=`<div class="grid2" style="margin-bottom:14px">
+${rows.map(([k,v])=>`<div class="prop"><div class="pl">${esc(k)}</div><div class="pv" style="font-size:13px;word-break:break-all">${esc(String(v))}</div></div>`).join('')}
+</div>
+${e.command_line?`<div class="prop"><div class="pl">Command Line</div><div style="font-size:12px;font-family:monospace;word-break:break-all;background:var(--bg);padding:10px;border-radius:6px;margin-top:4px;white-space:pre-wrap">${esc(e.command_line)}</div></div>`:''}`;
 }
 
 function exportTimelineCsv(){
