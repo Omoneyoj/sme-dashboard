@@ -6,6 +6,7 @@ Includes: Auth (PBKDF2+HMAC, roles), App Management, Bulk Alerts,
           Detection Rules, Timeline, Overview stats.
 """
 
+import asyncio
 import base64
 import datetime
 import hashlib
@@ -53,6 +54,8 @@ AUTH_SECRET_KEY = "config/auth_secret.json"
 APP_POLICY_KEY  = "config/app_policies.json"
 SETTINGS_KEY    = "config/dashboard_settings.json"
 AGENT_SCHEDULE_KEY = "config/agent_schedule.json"
+RETENTION_POLICY_KEY   = "config/retention_policy.json"
+RETENTION_LAST_RUN_KEY = "config/retention_last_run.json"
 
 ALLOWED_COMMANDS = {
     "force_audit", "force_report", "enable_enforcement", "disable_enforcement",
@@ -89,6 +92,64 @@ AGENT_SCHEDULE_MIN = {
     "reporter_interval_minutes":         1,
     "command_executor_interval_minutes": 1,
 }
+
+# ── Retention Policy ──────────────────────────────────────────────────────────
+# One JSON object in Oracle (RETENTION_POLICY_KEY) drives retention on BOTH
+# sides of the system:
+#   - Cloud side (archive/ historical report snapshots, Closed alerts) is
+#     swept by THIS dashboard backend (main.py — it's the only side holding
+#     delete-capable "commander" Oracle credentials). See run_retention_sweep().
+#   - Endpoint side (agent.log/usb_events.log/process_monitor.log rotation,
+#     quarantined-file pruning) is applied locally by each SMESecurityAgent
+#     service, which reads this same object directly from Oracle with its
+#     own read-only credentials (same pattern as config/agent_schedule.json —
+#     see agent.py fetch_remote_retention_policy()). The dashboard never
+#     reaches into an endpoint's local disk; it can only tell the agent what
+#     policy to self-enforce.
+#
+# Deleting data is destructive, so — mirroring this platform's existing
+# "audit-only by default, enforcement requires explicit admin opt-in" rule —
+# retention starts OFF (enabled: False) until an admin turns it on.
+#
+# "age_days" and "max_size_gb" are independent triggers: leave either blank
+# (None/0) to disable it, set one, or set both — an object/file is eligible
+# for the configured action the moment EITHER condition it has is met.
+#
+# Closed-only safety rail: cloud_alerts retention only ever touches alerts
+# with status == "Closed" — New/Open alerts are never deleted or moved by
+# this policy no matter how old they are or how much space they use.
+#
+# "move" is only meaningful for cloud targets (archive/ objects, Closed
+# alerts) — they get copied to move_destination (any S3-compatible bucket:
+# another Oracle bucket, AWS S3, or an on-prem MinIO/S3-compatible server)
+# and only removed from the primary bucket after a successful copy.
+# Endpoint targets (logs, quarantine) don't support "move" — there's no
+# generically safe way to ship arbitrary destination credentials to every
+# installed PC — so endpoint retention is always local rotate/delete,
+# independently gated by delete_from_endpoint.
+DEFAULT_RETENTION_POLICY = {
+    "enabled":              False,
+    "age_days":             None,   # e.g. 90 — objects/files older than this are eligible
+    "max_size_gb":          None,   # e.g. 5 — oldest-first eligible once the target's total exceeds this
+    "targets": {
+        "cloud_reports":      True,   # archive/ — historical per-run report snapshots (NOT reports/latest.json, which is always current and never touched)
+        "cloud_alerts":       True,   # alerts/ — Closed alerts only (see safety rail above)
+        "endpoint_logs":      True,   # agent.log, usb_events.log, process_monitor.log on each PC
+        "endpoint_quarantine": True,  # quarantined files under C:\ProgramData\CustomSec\Quarantine on each PC
+    },
+    "action":               "delete",  # "delete" | "move" — applies to cloud targets only, see above
+    "delete_from_cloud":    True,      # master switch: touch cloud_reports/cloud_alerts at all
+    "delete_from_endpoint": True,      # master switch: touch endpoint_logs/endpoint_quarantine at all
+    "move_destination": {
+        "endpoint":   "",  # e.g. https://<namespace>.compat.objectstorage.<region>.oraclecloud.com, or an on-prem MinIO URL
+        "access_key": "",
+        "secret_key": "",  # write-only: never returned by GET, see _get_retention_policy()
+        "bucket":     "",
+        "region":     "us-ashburn-1",
+        "prefix":     "retained/",
+    },
+    "sweep_interval_hours": 24,  # how often the dashboard opportunistically re-runs the cloud sweep
+}
 ALLOWED_ACTIONS = [
     "alert_only", "kill_process", "isolate_host",
     "block_network", "collect_forensics",
@@ -98,6 +159,7 @@ TOKEN_EXPIRY  = 24 * 3600  # 24 h
 
 _CACHE: Dict[str, dict] = {}
 _CACHE_TTL = 20
+_retention_sweep_running = False
 
 
 # ── S3 helpers ────────────────────────────────────────────────────────────────
@@ -494,6 +556,220 @@ def _get_agent_schedule() -> dict:
     merged["updated_at"] = stored.get("updated_at")
     merged["updated_by"] = stored.get("updated_by")
     return merged
+
+
+def _get_retention_policy(redact: bool = True) -> dict:
+    """Merges DEFAULT_RETENTION_POLICY with whatever's saved to Oracle.
+    With redact=True (the GET-endpoint default) the destination secret key
+    is stripped and replaced with a has_secret flag so it's never sent back
+    to the browser after being saved; internal callers (the sweep itself,
+    PUT's merge-before-save) use redact=False to get the real value."""
+    client = s3()
+    stored = (s3_get(client, RETENTION_POLICY_KEY) or {}) if client else {}
+    merged = json.loads(json.dumps(DEFAULT_RETENTION_POLICY))  # deep copy
+    for k, v in stored.items():
+        if k == "targets" and isinstance(v, dict):
+            merged["targets"].update({tk: bool(tv) for tk, tv in v.items() if tk in merged["targets"]})
+        elif k == "move_destination" and isinstance(v, dict):
+            merged["move_destination"].update({dk: dv for dk, dv in v.items() if dk in merged["move_destination"]})
+        elif k in merged:
+            merged[k] = v
+    merged["updated_at"] = stored.get("updated_at")
+    merged["updated_by"] = stored.get("updated_by")
+    if redact:
+        has_secret = bool(merged["move_destination"].get("secret_key"))
+        merged["move_destination"]["secret_key"] = ""
+        merged["move_destination"]["has_secret"] = has_secret
+    return merged
+
+
+def _get_retention_last_run() -> Optional[dict]:
+    client = s3()
+    return s3_get(client, RETENTION_LAST_RUN_KEY) if client else None
+
+
+def _s3_client_for(dest: dict):
+    """Builds a boto3 client for an arbitrary S3-compatible retention
+    move-destination (another Oracle bucket, AWS S3, or an on-prem
+    MinIO/S3-compatible server) — anything with an endpoint URL and keys."""
+    if not dest or not all(dest.get(k) for k in ("endpoint", "access_key", "secret_key", "bucket")):
+        return None
+    try:
+        return boto3.client(
+            "s3", endpoint_url=dest["endpoint"],
+            aws_access_key_id=dest["access_key"], aws_secret_access_key=dest["secret_key"],
+            region_name=dest.get("region") or "us-east-1",
+            config=Config(signature_version="s3v4", connect_timeout=10, read_timeout=60,
+                           retries={"max_attempts": 2, "mode": "standard"}),
+        )
+    except Exception:
+        return None
+
+
+def _retention_eligible(objs: list, cutoff: Optional[datetime.datetime], size_budget: Optional[int]) -> list:
+    """objs: list of {"Key","Size","LastModified"} dicts (as returned by
+    list_prefix). Returns the subset eligible for the retention action —
+    the union of "older than cutoff" and, if the target's total size
+    exceeds size_budget, the oldest objects needed to bring it back under
+    budget. Oldest-first throughout."""
+    objs = sorted(objs, key=lambda o: o["LastModified"])
+    eligible_keys = set()
+    eligible = []
+    if cutoff:
+        for o in objs:
+            lm = o["LastModified"]
+            lm = lm.replace(tzinfo=None) if lm.tzinfo else lm
+            if lm < cutoff:
+                eligible_keys.add(o["Key"])
+                eligible.append(o)
+    if size_budget:
+        total = sum(o["Size"] for o in objs)
+        if total > size_budget:
+            running = total
+            for o in objs:
+                if running <= size_budget:
+                    break
+                if o["Key"] not in eligible_keys:
+                    eligible_keys.add(o["Key"])
+                    eligible.append(o)
+                running -= o["Size"]
+    return eligible
+
+
+def _sweep_prefix(client, dest_client, dest_cfg: dict, prefix: str, cutoff, size_budget,
+                   move: bool, stat: dict, cap: int = 2000):
+    objs = list_prefix(client, prefix)
+    stat["scanned"] = len(objs)
+    eligible = _retention_eligible(objs, cutoff, size_budget)[:cap]
+    stat["matched"] = len(eligible)
+    dest_bucket = dest_cfg.get("bucket") if dest_cfg else None
+    dest_prefix = (dest_cfg or {}).get("prefix", "")
+    for o in eligible:
+        key = o["Key"]
+        try:
+            if move and dest_client and dest_bucket:
+                body = client.get_object(Bucket=ORACLE_BUCKET, Key=key)["Body"].read()
+                dest_client.put_object(Bucket=dest_bucket, Key=f"{dest_prefix}{key}", Body=body)
+                client.delete_object(Bucket=ORACLE_BUCKET, Key=key)
+                stat["moved"] += 1
+            else:
+                client.delete_object(Bucket=ORACLE_BUCKET, Key=key)
+                stat["deleted"] += 1
+            stat["bytes_freed"] += o.get("Size", 0)
+        except Exception:
+            stat["errors"] += 1
+
+
+def _sweep_alerts(client, dest_client, dest_cfg: dict, cutoff, size_budget, move: bool, stat: dict, cap: int = 500):
+    """Same eligibility logic as _sweep_prefix, but every candidate is
+    fetched and MUST have status=='Closed' before it's touched — New/Open
+    alerts are never deleted or moved by retention, regardless of age or
+    size pressure. Capped lower than _sweep_prefix (500 vs 2000) because,
+    unlike report objects, checking status requires an extra GET per
+    candidate."""
+    objs = list_prefix(client, ALERTS_PREFIX)
+    stat["scanned"] = len(objs)
+    candidates = _retention_eligible(objs, cutoff, size_budget)[:cap]
+    dest_bucket = dest_cfg.get("bucket") if dest_cfg else None
+    dest_prefix = (dest_cfg or {}).get("prefix", "")
+    for o in candidates:
+        key = o["Key"]
+        try:
+            alert = json.loads(client.get_object(Bucket=ORACLE_BUCKET, Key=key)["Body"].read())
+        except Exception:
+            stat["errors"] += 1
+            continue
+        if alert.get("status") != "Closed":
+            continue
+        try:
+            if move and dest_client and dest_bucket:
+                dest_client.put_object(Bucket=dest_bucket, Key=f"{dest_prefix}{key}",
+                                        Body=json.dumps(alert).encode("utf-8"))
+                client.delete_object(Bucket=ORACLE_BUCKET, Key=key)
+                stat["moved"] += 1
+            else:
+                client.delete_object(Bucket=ORACLE_BUCKET, Key=key)
+                stat["deleted"] += 1
+            stat["matched"] += 1
+            stat["bytes_freed"] += o.get("Size", 0)
+        except Exception:
+            stat["errors"] += 1
+    cache_bust("alerts")
+
+
+def run_retention_sweep(trigger: str = "manual") -> dict:
+    """Cloud-side half of the retention policy. Runs synchronously (callers
+    dispatch it to a thread pool executor so it never blocks the event
+    loop — see /api/retention-policy/run-now and _maybe_kick_retention_sweep).
+    The endpoint-side half (log rotation, quarantine pruning) is applied
+    independently by each agent — see agent.py apply_endpoint_retention()."""
+    policy = _get_retention_policy(redact=False)
+    if not policy.get("enabled"):
+        return {"status": "skipped", "reason": "disabled", "trigger": trigger}
+    client = s3(commander=True)
+    if not client:
+        return {"status": "error", "reason": "Commander not configured", "trigger": trigger}
+
+    targets = policy.get("targets", {})
+    age_days = policy.get("age_days") or None
+    max_size_gb = policy.get("max_size_gb") or None
+    cutoff = (datetime.datetime.utcnow() - datetime.timedelta(days=age_days)) if age_days else None
+    size_budget = int(max_size_gb * (1024 ** 3)) if max_size_gb else None
+    action = policy.get("action", "delete")
+    move = action == "move"
+    dest_cfg = policy.get("move_destination") or {}
+    dest_client = _s3_client_for(dest_cfg) if move else None
+    if move and not dest_client:
+        return {"status": "error", "reason": "Move action selected but move_destination is not fully configured", "trigger": trigger}
+
+    summary = {}
+    if not policy.get("delete_from_cloud", True):
+        summary["cloud"] = {"status": "skipped", "reason": "delete_from_cloud is off"}
+    else:
+        if targets.get("cloud_reports"):
+            stat = {"scanned": 0, "matched": 0, "deleted": 0, "moved": 0, "errors": 0, "bytes_freed": 0}
+            _sweep_prefix(client, dest_client, dest_cfg, "archive/", cutoff, size_budget, move, stat)
+            summary["cloud_reports"] = stat
+        if targets.get("cloud_alerts"):
+            stat = {"scanned": 0, "matched": 0, "deleted": 0, "moved": 0, "errors": 0, "bytes_freed": 0}
+            _sweep_alerts(client, dest_client, dest_cfg, cutoff, size_budget, move, stat)
+            summary["cloud_alerts"] = stat
+
+    result = {"status": "completed", "trigger": trigger,
+              "ran_at": datetime.datetime.utcnow().isoformat(), "summary": summary}
+    s3_put(client, RETENTION_LAST_RUN_KEY, result)
+    return result
+
+
+async def _maybe_kick_retention_sweep():
+    """Opportunistic auto-trigger: since Render's free tier has no
+    always-on cron/worker, this checks (cheaply, off the request's Oracle
+    reads that already happen) whether it's been >= sweep_interval_hours
+    since the last recorded sweep, and if so runs one in a thread pool
+    executor without blocking the caller. Called fire-and-forget from
+    GET /api/overview — the most-visited page — so retention still runs
+    on roughly the right cadence even with zero dedicated infrastructure.
+    Guarded by an in-memory flag so concurrent requests can't pile up
+    duplicate sweeps."""
+    global _retention_sweep_running
+    if _retention_sweep_running:
+        return
+    policy = _get_retention_policy(redact=False)
+    if not policy.get("enabled"):
+        return
+    last = _get_retention_last_run() or {}
+    last_at = _parse_utc(last.get("ran_at") or "")
+    interval_h = max(1, int(policy.get("sweep_interval_hours") or 24))
+    if last_at and (datetime.datetime.utcnow() - last_at).total_seconds() < interval_h * 3600:
+        return
+    _retention_sweep_running = True
+    try:
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, run_retention_sweep, "auto")
+    except Exception:
+        pass
+    finally:
+        _retention_sweep_running = False
 
 
 def _get_app_policies() -> dict:
@@ -1299,6 +1575,7 @@ async def get_overview(request: Request):
     user = await get_user(request)
     if not user:
         raise HTTPException(401, "Authentication required")
+    asyncio.create_task(_maybe_kick_retention_sweep())
     settings = _get_settings()
     offline_threshold_hours = settings.get("offline_threshold_hours", 1)
     offline_days_warning    = settings.get("offline_days_warning", 7)
@@ -1459,6 +1736,108 @@ async def update_agent_schedule(request: Request, user=Depends(require_perm("set
         raise HTTPException(503, "Commander not configured")
     s3_put(client, AGENT_SCHEDULE_KEY, schedule)
     return JSONResponse(schedule)
+
+
+@app.get("/api/retention-policy")
+async def get_retention_policy(request: Request):
+    """Returns the merged retention policy with the destination secret key
+    redacted (see _get_retention_policy). Endpoint agents read the raw
+    Oracle object directly rather than calling this API."""
+    user = await get_user(request)
+    if not user:
+        raise HTTPException(401, "Authentication required")
+    policy = _get_retention_policy(redact=True)
+    policy["last_run"] = _get_retention_last_run()
+    return JSONResponse(policy)
+
+
+@app.put("/api/retention-policy")
+async def update_retention_policy(request: Request, user=Depends(require_perm("settings"))):
+    """Saves the retention policy to Oracle. Deletion is destructive, so
+    every field is validated defensively and an omitted/blank destination
+    secret_key means 'keep the existing one' rather than 'clear it' — this
+    is a write-only field the browser never sees back from GET."""
+    body = await request.json()
+    current = _get_retention_policy(redact=False)
+
+    if "enabled" in body:
+        current["enabled"] = bool(body["enabled"])
+    if "action" in body:
+        if body["action"] not in ("delete", "move"):
+            raise HTTPException(400, "'action' must be 'delete' or 'move'")
+        current["action"] = body["action"]
+    for flag in ("delete_from_cloud", "delete_from_endpoint"):
+        if flag in body:
+            current[flag] = bool(body[flag])
+
+    for numeric_key in ("age_days", "max_size_gb"):
+        if numeric_key in body:
+            v = body[numeric_key]
+            if v in (None, "", 0):
+                current[numeric_key] = None
+            else:
+                try:
+                    nv = float(v)
+                except (TypeError, ValueError):
+                    raise HTTPException(400, f"'{numeric_key}' must be a number")
+                if nv <= 0:
+                    raise HTTPException(400, f"'{numeric_key}' must be greater than 0 (or blank to disable)")
+                current[numeric_key] = int(nv) if numeric_key == "age_days" else nv
+
+    if "sweep_interval_hours" in body:
+        try:
+            iv = int(body["sweep_interval_hours"])
+        except (TypeError, ValueError):
+            raise HTTPException(400, "'sweep_interval_hours' must be a whole number")
+        current["sweep_interval_hours"] = max(1, iv)
+
+    if "targets" in body and isinstance(body["targets"], dict):
+        for k, v in body["targets"].items():
+            if k in current["targets"]:
+                current["targets"][k] = bool(v)
+
+    if "move_destination" in body and isinstance(body["move_destination"], dict):
+        d = body["move_destination"]
+        for k in ("endpoint", "access_key", "bucket", "region", "prefix"):
+            if k in d:
+                current["move_destination"][k] = (d[k] or "").strip()
+        # secret_key is write-only and sticky: only overwrite if a
+        # non-blank value was actually submitted this time.
+        if d.get("secret_key"):
+            current["move_destination"]["secret_key"] = d["secret_key"]
+
+    if current["action"] == "move" and not all(
+        current["move_destination"].get(k) for k in ("endpoint", "access_key", "bucket")
+    ) and not current["move_destination"].get("secret_key"):
+        raise HTTPException(400, "Move destination needs at least endpoint, access key, secret key, and bucket")
+
+    current["updated_at"] = datetime.datetime.utcnow().isoformat()
+    current["updated_by"] = user["username"]
+    client = s3(commander=True)
+    if not client:
+        raise HTTPException(503, "Commander not configured")
+    s3_put(client, RETENTION_POLICY_KEY, current)
+    out = _get_retention_policy(redact=True)
+    return JSONResponse(out)
+
+
+@app.post("/api/retention-policy/run-now")
+async def run_retention_policy_now(user=Depends(require_perm("settings"))):
+    """Runs the cloud-side sweep immediately and waits for the result
+    (dispatched to a thread pool executor so it doesn't block the event
+    loop). The endpoint-side half runs on its own inside each agent and
+    isn't triggerable from here — see agent.py."""
+    global _retention_sweep_running
+    if _retention_sweep_running:
+        raise HTTPException(409, "A retention sweep is already running")
+    _retention_sweep_running = True
+    try:
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, run_retention_sweep, "manual")
+    finally:
+        _retention_sweep_running = False
+    cache_bust("alerts")
+    return JSONResponse(result)
 
 
 @app.post("/api/alerts/webhook")

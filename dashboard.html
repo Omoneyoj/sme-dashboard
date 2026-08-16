@@ -250,6 +250,7 @@ const PTITLES={overview:'Overview',status:'Live Status',inventory:'Inventory',al
 function pTS(s){if(!s)return null;const hasTz=/Z$|[+-]\d{2}:\d{2}$/.test(s);const d=new Date(hasTz?s:s+'Z');return isNaN(d)?null:d;}
 function fmtTS(s){const d=pTS(s);return d?d.toLocaleString():'-';}
 function fmtAge(s){const d=pTS(s);if(!d)return '-';const sc=Math.floor((Date.now()-d)/1000);if(sc<60)return sc+'s ago';if(sc<3600)return Math.floor(sc/60)+'m ago';if(sc<86400)return Math.floor(sc/3600)+'h ago';return Math.floor(sc/86400)+'d ago';}
+function fmtBytes(n){n=Number(n)||0;if(n<1024)return n+' B';const u=['KB','MB','GB','TB'];let i=-1;do{n/=1024;i++;}while(n>=1024&&i<u.length-1);return n.toFixed(1)+' '+u[i];}
 function fmtMin(m){if(m===null||m===undefined)return 'N/A';if(m<60)return m.toFixed(0)+'m';return (m/60).toFixed(1)+'h';}
 function esc(s){return(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
 function eA(s){return(s||'').replace(/'/g,"\\'").replace(/"/g,'&quot;');}
@@ -910,9 +911,10 @@ async function delUser(uname){
 }
 
 async function renderSettings(el){
-  const [r,ar]=await Promise.all([api('/api/settings'),api('/api/agent-schedule')]);
+  const [r,ar,rp]=await Promise.all([api('/api/settings'),api('/api/agent-schedule'),api('/api/retention-policy')]);
   const s=r.ok?await r.json():{};
   const a=ar.ok?await ar.json():{};
+  const p=rp.ok?await rp.json():{};
   const isAdmin=_user?.role==='admin';
   const chk=(id,checked)=>`<input type="checkbox" id="${id}" ${checked?'checked':''} ${isAdmin?'':'disabled'} style="accent-color:var(--blue);width:14px;height:14px">`;
   const numRow=(id,label,val,note)=>`<div class="ff"><div class="fl">${label}</div><input id="${id}" class="fip" type="number" min="1" value="${val}" ${isAdmin?'':'disabled'}>${note?`<div style="font-size:11px;color:var(--muted);margin-top:3px">${note}</div>`:''}</div>`;
@@ -922,6 +924,16 @@ async function renderSettings(el){
   ${note?`<div style="font-size:11px;color:var(--muted);margin-left:22px">${note}</div>`:''}
   ${intervalHtml?`<div style="margin-left:22px;max-width:280px">${intervalHtml}</div>`:''}
 </div>`;
+
+  // ── Retention Policy card pieces ──
+  const dest=p.move_destination||{};
+  const t=p.targets||{};
+  const lr=p.last_run;
+  const targetChk=(id,checked,label)=>`<label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;padding:4px 0">${chk(id,checked)} ${label}</label>`;
+  const lrSummary=lr&&lr.summary?Object.entries(lr.summary).map(([k,v])=>{
+    if(v.status)return `<div style="font-size:11px;color:var(--muted)">${esc(k)}: ${esc(v.status)}${v.reason?' — '+esc(v.reason):''}</div>`;
+    return `<div style="font-size:11px;color:var(--muted)">${esc(k)}: scanned ${v.scanned||0}, matched ${v.matched||0}, deleted ${v.deleted||0}, moved ${v.moved||0}, errors ${v.errors||0}, freed ${fmtBytes(v.bytes_freed)}</div>`;
+  }).join(''):'';
 
   el.innerHTML=`<div style="display:flex;flex-direction:column;gap:20px;max-width:640px">
 <div class="card">
@@ -954,7 +966,70 @@ ${moduleRow('ag-cmd',a.command_executor_enabled!==false,'SME-CommandExecutor','E
 ${isAdmin?'<button class="btn btn-p" style="margin-top:14px" onclick="saveAgentSchedule()">Save Agent Schedule</button>':'<p style="font-size:12px;color:var(--muted);margin-top:10px">Requires Admin role.</p>'}
 ${a.updated_at?`<div style="font-size:11px;color:var(--muted);margin-top:8px">Last saved ${fmtAge(a.updated_at)} by ${esc(a.updated_by||'-')}</div>`:''}
 </div>
+
+<div class="card">
+<div class="card-header"><div class="card-title">Retention Policy</div></div>
+<div style="font-size:11px;color:var(--muted);margin-bottom:10px">Controls what happens to old data. Disabled by default &mdash; nothing is ever deleted or moved until an admin turns this on, mirroring how enforcement actions work elsewhere in this platform.</div>
+
+<label style="display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;cursor:pointer;margin-bottom:12px">${chk('rp-enabled',p.enabled===true)} Enable retention policy</label>
+
+<div class="grid2" style="margin-bottom:12px">
+${numRow('rp-age','Age threshold (days)',p.age_days||'','Leave blank to disable. Data older than this becomes eligible.')}
+${numRow('rp-size','Size threshold (GB)',p.max_size_gb||'','Leave blank to disable. Oldest data is removed first once a target exceeds this.')}
+</div>
+<div style="font-size:11px;color:var(--muted);margin-bottom:12px">Either threshold can trigger the action on its own &mdash; set one, both, or leave both blank to keep this off.</div>
+
+<div class="fl" style="margin-bottom:6px">Applies to</div>
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:2px 16px;margin-bottom:14px;padding-bottom:12px;border-bottom:1px solid var(--border)">
+${targetChk('rp-t-reports',t.cloud_reports!==false,'Cloud: Archived Reports')}
+${targetChk('rp-t-alerts',t.cloud_alerts!==false,'Cloud: Closed Alerts')}
+${targetChk('rp-t-logs',t.endpoint_logs!==false,'Endpoint: Agent/Watcher Logs')}
+${targetChk('rp-t-quarantine',t.endpoint_quarantine!==false,'Endpoint: Quarantined Files')}
+</div>
+<div style="font-size:11px;color:var(--muted);margin-top:-8px;margin-bottom:14px">Closed Alerts only &mdash; New/Open alerts are never touched by retention regardless of age or size.</div>
+
+<div class="ff" style="margin-bottom:12px"><div class="fl">Action</div>
+<select id="rp-action" class="fsel" onchange="tglRpDest()">
+  <option value="delete" ${p.action!=='move'?'selected':''}>Delete</option>
+  <option value="move" ${p.action==='move'?'selected':''}>Move to another location, then delete from source</option>
+</select></div>
+
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:2px 16px;margin-bottom:14px">
+<label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer">${chk('rp-del-cloud',p.delete_from_cloud!==false)} Apply to cloud storage</label>
+<label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer">${chk('rp-del-endpoint',p.delete_from_endpoint!==false)} Apply to endpoint (each PC)</label>
+</div>
+<div style="font-size:11px;color:var(--muted);margin-top:-10px;margin-bottom:14px">"Move" only applies to cloud data (Archived Reports / Closed Alerts). Endpoint logs and quarantined files don't support moving to a destination &mdash; they're always rotated/deleted locally when endpoint retention is on.</div>
+
+<div id="rp-dest-wrap" style="display:${p.action==='move'?'flex':'none'};flex-direction:column;gap:12px;padding:14px;background:var(--surface2);border-radius:8px;margin-bottom:14px">
+<div class="fl">Move Destination (any S3-compatible bucket &mdash; another Oracle bucket, AWS S3, or an on-prem MinIO/S3-compatible server)</div>
+<div class="ff"><div class="fl">Endpoint URL</div><input id="rp-dest-endpoint" class="fip" value="${esc(dest.endpoint||'')}" placeholder="https://s3.example.com or on-prem MinIO URL"></div>
+<div class="grid2">
+<div class="ff"><div class="fl">Bucket</div><input id="rp-dest-bucket" class="fip" value="${esc(dest.bucket||'')}" placeholder="retained-security-data"></div>
+<div class="ff"><div class="fl">Region</div><input id="rp-dest-region" class="fip" value="${esc(dest.region||'us-ashburn-1')}"></div>
+</div>
+<div class="grid2">
+<div class="ff"><div class="fl">Access Key</div><input id="rp-dest-key" class="fip" value="${esc(dest.access_key||'')}"></div>
+<div class="ff"><div class="fl">Secret Key</div><input id="rp-dest-secret" class="fip" type="password" placeholder="${dest.has_secret?'Unchanged (leave blank to keep)':'Enter secret key'}"></div>
+</div>
+<div class="ff"><div class="fl">Key Prefix (optional)</div><input id="rp-dest-prefix" class="fip" value="${esc(dest.prefix||'retained/')}"></div>
+</div>
+
+${numRow('rp-interval','Auto-sweep interval (hours)',p.sweep_interval_hours||24,'How often the dashboard opportunistically re-checks the cloud side. Actual cadence depends on dashboard traffic since there\'s no dedicated background worker.')}
+
+${isAdmin?`<div class="btn-row" style="margin-top:14px">
+<button class="btn btn-p" onclick="saveRetention()">Save Retention Policy</button>
+<button class="btn btn-d" onclick="runRetentionNow(this)">Run Cloud Sweep Now</button>
+</div>`:'<p style="font-size:12px;color:var(--muted);margin-top:10px">Requires Admin role.</p>'}
+${p.updated_at?`<div style="font-size:11px;color:var(--muted);margin-top:8px">Last saved ${fmtAge(p.updated_at)} by ${esc(p.updated_by||'-')}</div>`:''}
+${lr?`<div style="font-size:11px;color:var(--muted);margin-top:8px">Last cloud sweep: ${fmtAge(lr.ran_at)} (${esc(lr.trigger||'-')}, ${esc(lr.status||'-')})${lrSummary?`<div style="margin-top:4px">${lrSummary}</div>`:''}</div>`:'<div style="font-size:11px;color:var(--muted);margin-top:8px">No cloud sweep has run yet.</div>'}
+</div>
 </div>`;
+}
+
+function tglRpDest(){
+  const show=document.getElementById('rp-action')?.value==='move';
+  const el=document.getElementById('rp-dest-wrap');
+  if(el)el.style.display=show?'flex':'none';
 }
 
 async function saveSets(){
@@ -979,6 +1054,43 @@ async function saveAgentSchedule(){
   const r=await api('/api/agent-schedule',{method:'PUT',body:JSON.stringify(body)});
   if(r.ok){alert('Agent schedule saved! Endpoint agents will pick this up within one Command Executor cycle.');renderSettings(document.getElementById('content'));}
   else{const d=await r.json().catch(()=>({detail:'Error'}));alert('Failed: '+d.detail);}
+}
+
+async function saveRetention(){
+  const gv=id=>document.getElementById(id)?.value;
+  const gc=id=>!!document.getElementById(id)?.checked;
+  const body={
+    enabled:gc('rp-enabled'),
+    age_days:gv('rp-age')?parseInt(gv('rp-age')):null,
+    max_size_gb:gv('rp-size')?parseFloat(gv('rp-size')):null,
+    targets:{cloud_reports:gc('rp-t-reports'),cloud_alerts:gc('rp-t-alerts'),endpoint_logs:gc('rp-t-logs'),endpoint_quarantine:gc('rp-t-quarantine')},
+    action:gv('rp-action'),
+    delete_from_cloud:gc('rp-del-cloud'),
+    delete_from_endpoint:gc('rp-del-endpoint'),
+    sweep_interval_hours:parseInt(gv('rp-interval'))||24,
+    move_destination:{
+      endpoint:(gv('rp-dest-endpoint')||'').trim(),
+      access_key:(gv('rp-dest-key')||'').trim(),
+      secret_key:gv('rp-dest-secret')||'',
+      bucket:(gv('rp-dest-bucket')||'').trim(),
+      region:(gv('rp-dest-region')||'').trim()||'us-ashburn-1',
+      prefix:(gv('rp-dest-prefix')||'').trim()||'retained/',
+    },
+  };
+  const r=await api('/api/retention-policy',{method:'PUT',body:JSON.stringify(body)});
+  if(r.ok){alert('Retention policy saved.');renderSettings(document.getElementById('content'));}
+  else{const d=await r.json().catch(()=>({detail:'Error'}));alert('Failed: '+d.detail);}
+}
+
+async function runRetentionNow(btn){
+  if(!confirm('Run the cloud-side retention sweep now? Depending on the saved policy this may permanently delete or move data. Continue?'))return;
+  btn.disabled=true;const orig=btn.textContent;btn.textContent='Running...';
+  try{
+    const r=await api('/api/retention-policy/run-now',{method:'POST'});
+    const d=await r.json().catch(()=>({}));
+    if(r.ok){alert('Sweep complete.');renderSettings(document.getElementById('content'));}
+    else{alert('Failed: '+(d.detail||d.reason||r.status));btn.disabled=false;btn.textContent=orig;}
+  }catch(ex){alert('Failed: '+ex);btn.disabled=false;btn.textContent=orig;}
 }
 
 function cM(id){document.getElementById(id).style.display='none';}
