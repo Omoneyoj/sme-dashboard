@@ -21,7 +21,6 @@ from typing import Dict, List, Optional
 
 import boto3
 from botocore.config import Config
-from botocore.exceptions import ClientError
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
@@ -53,11 +52,42 @@ AUTH_USERS_KEY  = "config/users.json"
 AUTH_SECRET_KEY = "config/auth_secret.json"
 APP_POLICY_KEY  = "config/app_policies.json"
 SETTINGS_KEY    = "config/dashboard_settings.json"
+AGENT_SCHEDULE_KEY = "config/agent_schedule.json"
 
 ALLOWED_COMMANDS = {
-    "force_audit", "enable_enforcement", "disable_enforcement",
+    "force_audit", "force_report", "enable_enforcement", "disable_enforcement",
     "isolate_host", "restore_network", "kill_process", "apply_policy",
     "update_rules", "uninstall_app", "sanction_app",
+}
+
+# Defaults mirrored from agent.py's DEFAULT_SCHEDULE. Units are the
+# human-friendly units shown in the dashboard UI (hours/minutes); the
+# agent converts to seconds itself. Keep these two lists of keys in sync.
+DEFAULT_AGENT_SCHEDULE = {
+    "defender_dns_interval_hours":       24,
+    "defender_dns_enabled":              True,
+    "threat_interval_minutes":           5,
+    "threat_enabled":                    True,
+    "timeline_interval_minutes":         30,
+    "timeline_lookback_hours":           24,
+    "timeline_enabled":                  True,
+    "reporter_interval_minutes":         15,
+    "command_executor_interval_minutes": 5,
+    "command_executor_enabled":          True,
+    "usb_lockdown_enabled":              True,
+    "process_monitor_enabled":           True,
+}
+
+# Sane floors so a fat-fingered dashboard value can't spin an endpoint
+# agent's thread into a hot loop or hammer Oracle. Mirrors agent.py's
+# _MIN_SECONDS but expressed in the same hour/minute units as the field.
+AGENT_SCHEDULE_MIN = {
+    "defender_dns_interval_hours":       1,
+    "threat_interval_minutes":           1,
+    "timeline_interval_minutes":         5,
+    "timeline_lookback_hours":           1,
+    "reporter_interval_minutes":         1,
+    "command_executor_interval_minutes": 1,
 }
 ALLOWED_ACTIONS = [
     "alert_only", "kill_process", "isolate_host",
@@ -93,26 +123,7 @@ def s3(commander=False):
 def s3_get(client, key: str):
     try:
         return json.loads(client.get_object(Bucket=ORACLE_BUCKET, Key=key)["Body"].read())
-    except ClientError as e:
-        code = e.response.get("Error", {}).get("Code", "")
-        if code in ("NoSuchKey", "404"):
-            # Expected/routine: this module simply hasn't reported yet (e.g.
-            # a module added to a device for the first time, or its
-            # reporter cycle hasn't run since install). Not worth logging
-            # on every poll.
-            return None
-        # Anything else (permissions, throttling, a genuinely malformed
-        # request) is NOT routine, and used to be swallowed identically to
-        # "doesn't exist yet" - making a real upload/permissions problem
-        # indistinguishable from "just hasn't reported yet" from the
-        # dashboard's side. Print it so it at least shows up in the Render
-        # service logs instead of vanishing silently.
-        print(f"[s3_get] {key}: {code}: {e}")
-        return None
-    except Exception as e:
-        # Covers JSON decode errors from a partial/corrupt upload, network
-        # issues, etc. - same reasoning as above.
-        print(f"[s3_get] {key}: {type(e).__name__}: {e}")
+    except Exception:
         return None
 
 
@@ -431,7 +442,7 @@ def fetch_device_detail(site_name: str, hostname: str) -> dict:
                     "process_name": evt.get("path", "").split("\\")[-1],
                     "pid": evt.get("pid"), "path": evt.get("path", ""),
                     "drive": evt.get("drive", ""), "action": evt.get("action", ""),
-                    "verdict": evt.get("verdict", ""), "user": evt.get("user", ""),
+                    "verdict": evt.get("verdict", ""),
                 })
     if "threat" in modules:
         for d in (modules["threat"].get("raw") or {}).get("detections", []):
@@ -439,7 +450,7 @@ def fetch_device_detail(site_name: str, hostname: str) -> dict:
                 "source": "defender", "time": d.get("TimeCreated"),
                 "event_type": "threat_detected", "threat_name": d.get("ThreatName", ""),
                 "severity": d.get("Severity", ""), "path": d.get("Path", ""),
-                "action": d.get("ActionName", ""), "user": d.get("DetectionUser", ""),
+                "action": d.get("ActionName", ""),
             })
     if "playbook_alerts" in modules:
         for a in (modules["playbook_alerts"].get("raw") or {}).get("alerts", []):
@@ -448,7 +459,7 @@ def fetch_device_detail(site_name: str, hostname: str) -> dict:
                 "event_type": "rule_match", "process_name": a.get("process_name", ""),
                 "pid": a.get("pid"), "command_line": a.get("command_line", ""),
                 "threat_name": a.get("rule_name", ""), "severity": a.get("severity", ""),
-                "action": ", ".join(a.get("actions", [])), "user": a.get("user", ""),
+                "action": ", ".join(a.get("actions", [])),
             })
     timeline.sort(key=lambda x: x.get("time") or "")
     timeline = timeline[-500:]
@@ -467,6 +478,22 @@ def fetch_device_detail(site_name: str, hostname: str) -> dict:
 def _get_settings() -> dict:
     client = s3()
     return (s3_get(client, SETTINGS_KEY) or {}) if client else {}
+
+
+def _get_agent_schedule() -> dict:
+    """Merges DEFAULT_AGENT_SCHEDULE with whatever the dashboard has saved
+    to Oracle, so the response always contains every known key even before
+    the dashboard has ever written an override. Endpoint agents read the
+    raw Oracle object directly (see agent.py fetch_remote_schedule) rather
+    than calling this API, so it stays available even if Render is asleep;
+    this function only backs the dashboard UI's own view/edit of it."""
+    client = s3()
+    stored = (s3_get(client, AGENT_SCHEDULE_KEY) or {}) if client else {}
+    merged = dict(DEFAULT_AGENT_SCHEDULE)
+    merged.update({k: v for k, v in stored.items() if k in DEFAULT_AGENT_SCHEDULE})
+    merged["updated_at"] = stored.get("updated_at")
+    merged["updated_by"] = stored.get("updated_by")
+    return merged
 
 
 def _get_app_policies() -> dict:
@@ -1389,6 +1416,49 @@ async def update_settings(request: Request, user=Depends(require_perm("settings"
         raise HTTPException(503, "Commander not configured")
     s3_put(client, SETTINGS_KEY, settings)
     return JSONResponse(settings)
+
+
+@app.get("/api/agent-schedule")
+async def get_agent_schedule(request: Request):
+    """Returns the current dashboard-configurable endpoint agent schedule
+    (SME-DefenderAudit/DNSAudit/USBLockdown/ProcessMonitor/ThreatReporter/
+    TimelineCollector/Reporter/CommandExecutor), merged with defaults for
+    any key never explicitly saved."""
+    user = await get_user(request)
+    if not user:
+        raise HTTPException(401, "Authentication required")
+    return JSONResponse(_get_agent_schedule())
+
+
+@app.put("/api/agent-schedule")
+async def update_agent_schedule(request: Request, user=Depends(require_perm("settings"))):
+    """Saves the endpoint agent schedule to config/agent_schedule.json in
+    Oracle. Every installed SMESecurityAgent service reads this object
+    directly on its own cycle (see agent.py) and applies changed
+    intervals/enable-toggles live, without a service restart."""
+    body = await request.json()
+    schedule = _get_agent_schedule()
+    for k, v in body.items():
+        if k not in DEFAULT_AGENT_SCHEDULE:
+            continue
+        if isinstance(DEFAULT_AGENT_SCHEDULE[k], bool):
+            schedule[k] = bool(v)
+        else:
+            try:
+                iv = int(v)
+            except (TypeError, ValueError):
+                raise HTTPException(400, f"'{k}' must be a whole number")
+            floor = AGENT_SCHEDULE_MIN.get(k, 1)
+            if iv < floor:
+                raise HTTPException(400, f"'{k}' must be at least {floor}")
+            schedule[k] = iv
+    schedule["updated_at"] = datetime.datetime.utcnow().isoformat()
+    schedule["updated_by"] = user["username"]
+    client = s3(commander=True)
+    if not client:
+        raise HTTPException(503, "Commander not configured")
+    s3_put(client, AGENT_SCHEDULE_KEY, schedule)
+    return JSONResponse(schedule)
 
 
 @app.post("/api/alerts/webhook")

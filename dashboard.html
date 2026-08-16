@@ -60,8 +60,6 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-seri
 .stat-label{font-size:11px;color:var(--muted);font-weight:500;text-transform:uppercase;letter-spacing:.06em;}
 .stat-sub{font-size:11px;color:var(--muted);margin-top:6px;}
 .table-wrap{overflow-x:auto;}
-.tl-scroll{max-height:420px;overflow-y:auto;overflow-x:auto;}
-.tl-scroll table thead th{position:sticky;top:0;background:var(--surface);z-index:1;}
 table{width:100%;border-collapse:collapse;font-size:12px;}
 th{text-align:left;padding:8px 12px;color:var(--muted);font-weight:500;font-size:11px;text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid var(--border);white-space:nowrap;}
 td{padding:8px 12px;border-bottom:1px solid rgba(30,45,71,.5);vertical-align:middle;}
@@ -413,6 +411,7 @@ function renderStatus(el){
 <div style="display:flex;gap:4px;margin-bottom:12px">${mds}</div>
 ${canC?`<div class="btn-row">
   <button class="btn btn-g" style="font-size:11px" onclick="cmd('${se}','${he}','force_audit',this)">&#x21BA; Audit</button>
+  <button class="btn btn-g" style="font-size:11px" onclick="cmd('${se}','${he}','force_report',this)">&#x2191; Report</button>
   <button class="btn btn-s" style="font-size:11px" onclick="cmd('${se}','${he}','enable_enforcement',this)">&#x2713; Enforce</button>
   <button class="btn btn-d" style="font-size:11px" onclick="cmd('${se}','${he}','isolate_host',this)">&#x26A1; Isolate</button>
   <button class="btn btn-g" style="font-size:11px" onclick="cmd('${se}','${he}','restore_network',this)">&#x21A9; Restore</button></div>
@@ -453,7 +452,6 @@ return `<tr class="cr" onclick="openDev('${eA(d.site_name)}','${eA(d.hostname)}'
 }
 
 async function openDev(site,hostname){
-  _tlDevice=hostname;_tlF='';_tlType='';_tlUser='';
   document.getElementById('dm-t').textContent=hostname;
   document.getElementById('dm-b').innerHTML='<div class="empty">Loading...</div>';
   document.getElementById('dm').style.display='flex';
@@ -493,96 +491,17 @@ async function openDev(site,hostname){
 ${cA?`<td class="iac"><button class="btn btn-g" style="font-size:10px;padding:3px 7px" onclick="sancApp('${eA(a.name)}',${a.sanctioned===false})">${a.sanctioned===false?'Sanction':'Unsanction'}</button><button class="btn btn-d" style="font-size:10px;padding:3px 7px" onclick="uinstApp('${eA(site)}','${eA(hostname)}','${eA(a.name)}')">Uninstall</button></td>`:''}
 </tr>`).join('')}</tbody></table></div>`:'<div class="empty" style="padding:24px">No app data yet</div>';
 
-  _tl=d.timeline||[];
-  renderTimeline(document.getElementById('sub-dt'));
-}
-
-let _tl=[],_tlF='',_tlType='',_tlUser='',_tlDevice='';
-const TI={process_creation:'&#x2699;',logon:'&#x1F511;',logon_failure:'&#x26A0;',logoff:'&#x1F6AA;',service_installed:'&#x1F6E0;',service_crash:'&#x1F4A5;',threat_detected:'&#x1F6A8;',rule_match:'&#x1F4CB;',usb_execution:'&#x1F4BE;',suspicious_process:'&#x1F534;',network_connection:'&#x1F310;',defender:'&#x1F6E1;'};
-const TC={process_creation:'var(--blue)',logon:'var(--green)',logon_failure:'var(--red)',logoff:'var(--muted)',service_installed:'var(--amber)',service_crash:'var(--red)',threat_detected:'var(--red)',rule_match:'var(--amber)',usb_execution:'var(--amber)',suspicious_process:'var(--red)',network_connection:'var(--cyan)',defender:'var(--blue)'};
-
-function tlDetail(e){
-  const parts=[];
-  if(e.command_line)parts.push('cmd: '+e.command_line);
-  if(e.path)parts.push('path: '+e.path);
-  if(e.remote_address)parts.push('-> '+e.remote_address+(e.remote_port?':'+e.remote_port:''));
-  if(e.drive)parts.push('drive: '+e.drive);
-  if(e.action)parts.push('action: '+e.action);
-  if(e.verdict)parts.push('verdict: '+e.verdict);
-  if(e.severity)parts.push('severity: '+e.severity);
-  if(e.logon_type)parts.push('logon_type: '+e.logon_type);
-  if(e.source_ip)parts.push('src: '+e.source_ip);
-  return parts.join(' | ');
-}
-
-function tlFiltered(){
-  let f=[..._tl];
-  if(_tlType)f=f.filter(e=>(e.event_type||e.source||'event')===_tlType);
-  if(_tlUser)f=f.filter(e=>(e.user||'')===_tlUser);
-  if(_tlF){
-    const q=_tlF.toLowerCase();
-    f=f.filter(e=>(e.process_name||'').toLowerCase().includes(q)
-      ||(e.threat_name||'').toLowerCase().includes(q)
-      ||(e.command_line||'').toLowerCase().includes(q)
-      ||(e.user||'').toLowerCase().includes(q)
-      ||(e.path||'').toLowerCase().includes(q));
-  }
-  return f;
-}
-
-function csvEsc(v){
-  v=v===null||v===undefined?'':String(v);
-  return /[",\r\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v;
-}
-
-function downloadTimelineCSV(){
-  const f=tlFiltered();
-  const header=['Time','Type','User','Process/Threat','PID','Details'];
-  const rows=f.slice().reverse().map(e=>[
-    fmtTS(e.time),e.event_type||e.source||'event',e.user||'',
-    e.threat_name||e.process_name||'',e.pid===null||e.pid===undefined?'':e.pid,tlDetail(e)
-  ]);
-  const csv=[header,...rows].map(r=>r.map(csvEsc).join(',')).join('\r\n');
-  const blob=new Blob(['\ufeff'+csv],{type:'text/csv;charset=utf-8;'});
-  const url=URL.createObjectURL(blob);
-  const a=document.createElement('a');
-  a.href=url;a.download=`timeline_${_tlDevice||'device'}_${new Date().toISOString().slice(0,10)}.csv`;
-  document.body.appendChild(a);a.click();document.body.removeChild(a);
-  URL.revokeObjectURL(url);
-}
-
-function renderTimeline(el){
-  if(!_tl.length){el.innerHTML='<div class="empty" style="padding:24px">No timeline yet. Collects every 5 min after startup.</div>';return;}
-  const f=tlFiltered();
-  const types=[...new Set(_tl.map(e=>e.event_type||e.source||'event'))].sort();
-  const users=[...new Set(_tl.map(e=>e.user).filter(Boolean))].sort();
-  el.innerHTML=`<div class="filter-bar">
-<input class="fi" value="${esc(_tlF)}" placeholder="Search process, user, cmd..." style="width:200px" oninput="_tlF=this.value;renderTimeline(document.getElementById('sub-dt'))">
-<select class="fs" onchange="_tlType=this.value;renderTimeline(document.getElementById('sub-dt'))">
-  <option value="">All types</option>${types.map(t=>`<option value="${esc(t)}" ${t===_tlType?'selected':''}>${esc(t)}</option>`).join('')}
-</select>
-<select class="fs" onchange="_tlUser=this.value;renderTimeline(document.getElementById('sub-dt'))">
-  <option value="">All users</option>${users.map(u=>`<option value="${esc(u)}" ${u===_tlUser?'selected':''}>${esc(u)}</option>`).join('')}
-</select>
-<button class="btn btn-g" style="font-size:11px;margin-left:auto" onclick="downloadTimelineCSV()">&#x2B07; Download CSV</button>
-</div>
-<div id="tl-body"></div>`;
-  const body=document.getElementById('tl-body');
-  if(!f.length){body.innerHTML='<div class="empty">No events match filters</div>';return;}
-  const row=e=>{
+  const tl=d.timeline||[];
+  const TI={process_creation:'&#x2699;',logon:'&#x1F511;',logon_failure:'&#x26A0;',logoff:'&#x1F6AA;',service_installed:'&#x1F6E0;',service_crash:'&#x1F4A5;',threat_detected:'&#x1F6A8;',rule_match:'&#x1F4CB;',usb_execution:'&#x1F4BE;',suspicious_process:'&#x1F534;',network_connection:'&#x1F310;',defender:'&#x1F6E1;'};
+  const TC={process_creation:'var(--blue)',logon:'var(--green)',logon_failure:'var(--red)',logoff:'var(--muted)',service_installed:'var(--amber)',service_crash:'var(--red)',threat_detected:'var(--red)',rule_match:'var(--amber)',usb_execution:'var(--amber)',suspicious_process:'var(--red)',network_connection:'var(--cyan)',defender:'var(--blue)'};
+  const sub=document.getElementById('sub-dt');
+  if(!tl.length){sub.innerHTML='<div class="empty" style="padding:24px">No timeline yet. Collects every 30 min after startup.</div>';return;}
+  sub.innerHTML=`<div class="scroll">${tl.slice().reverse().map(e=>{
     const et=e.event_type||e.source||'event';const ic=TI[et]||'&#x25CF;';const co=TC[et]||'var(--muted)';
-    const proc=e.threat_name||e.process_name||'-';
-    const det=tlDetail(e);
-    return `<tr>
-<td style="font-size:11px;white-space:nowrap">${fmtTS(e.time)}</td>
-<td><span style="background:var(--surface2);padding:1px 5px;border-radius:4px;color:${co};font-size:11px;white-space:nowrap">${ic} ${esc(et)}</span></td>
-<td style="font-size:12px;white-space:nowrap">${esc(e.user||'-')}</td>
-<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(proc)}</td>
-<td style="font-size:11px">${e.pid===null||e.pid===undefined?'-':e.pid}</td>
-<td style="font-size:11px;color:var(--muted);max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(det)}">${esc(det)}</td>
-</tr>`;};
-  body.innerHTML=`<div class="tl-scroll table-wrap"><table><thead><tr><th>Time</th><th>Type</th><th>User</th><th>Process/Threat</th><th>PID</th><th>Details</th></tr></thead>
-<tbody>${f.slice().reverse().map(row).join('')}</tbody></table></div>`;
+    const desc=e.threat_name||e.process_name||e.user||'(event)';
+    const dt=[e.command_line&&'cmd:'+e.command_line.substring(0,100),e.pid&&'PID:'+e.pid,e.remote_address&&'->'+e.remote_address].filter(Boolean).join(' | ');
+    return `<div class="tl-item"><div class="tl-dot" style="background:${co}"></div><div class="tl-cnt"><div class="tl-t"><span style="background:var(--surface2);padding:1px 5px;border-radius:4px;color:${co}">${ic} ${et}</span> ${fmtTS(e.time)}</div><div class="tl-e">${esc(desc)}</div>${dt?`<div class="tl-d">${esc(dt)}</div>`:''}</div></div>`;
+  }).join('')}</div>`;
 }
 
 let _aF='',_aS='',_aSev='',_aSite='',_aG='none';
@@ -936,8 +855,21 @@ async function delUser(uname){
 }
 
 async function renderSettings(el){
-  const r=await api('/api/settings');const s=r.ok?await r.json():{};
-  el.innerHTML=`<div class="card" style="max-width:540px">
+  const [r,ar]=await Promise.all([api('/api/settings'),api('/api/agent-schedule')]);
+  const s=r.ok?await r.json():{};
+  const a=ar.ok?await ar.json():{};
+  const isAdmin=_user?.role==='admin';
+  const chk=(id,checked)=>`<input type="checkbox" id="${id}" ${checked?'checked':''} ${isAdmin?'':'disabled'} style="accent-color:var(--blue);width:14px;height:14px">`;
+  const numRow=(id,label,val,note)=>`<div class="ff"><div class="fl">${label}</div><input id="${id}" class="fip" type="number" min="1" value="${val}" ${isAdmin?'':'disabled'}>${note?`<div style="font-size:11px;color:var(--muted);margin-top:3px">${note}</div>`:''}</div>`;
+  const moduleRow=(chkId,checked,label,note,intervalHtml)=>`
+<div style="display:flex;flex-direction:column;gap:8px;padding:10px 0;border-bottom:1px solid var(--border)">
+  <label style="display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;cursor:pointer">${chk(chkId,checked)} ${label}</label>
+  ${note?`<div style="font-size:11px;color:var(--muted);margin-left:22px">${note}</div>`:''}
+  ${intervalHtml?`<div style="margin-left:22px;max-width:280px">${intervalHtml}</div>`:''}
+</div>`;
+
+  el.innerHTML=`<div style="display:flex;flex-direction:column;gap:20px;max-width:640px">
+<div class="card">
 <div class="card-header"><div class="card-title">Dashboard Settings</div></div>
 <div style="display:flex;flex-direction:column;gap:14px">
 <div class="ff"><div class="fl">Organisation Name</div><input id="so" class="fip" value="${esc(s.org_name||'')}" placeholder="Sunrise Pharmacy Group"></div>
@@ -945,14 +877,52 @@ async function renderSettings(el){
 <div class="ff"><div class="fl">Long-Offline Warning (days)</div><input id="sow" class="fip" type="number" min="1" value="${s.offline_days_warning||7}"><div style="font-size:11px;color:var(--muted);margin-top:3px">Days before flagged on Overview.</div></div>
 <div class="ff"><div class="fl">MTTD Target (minutes)</div><input id="sm" class="fip" type="number" min="1" value="${s.mttd_target_minutes||30}"><div style="font-size:11px;color:var(--muted);margin-top:3px">Bar is green when actual MTTD &le; this.</div></div>
 <div class="ff"><div class="fl">MTTR Target (minutes)</div><input id="smt" class="fip" type="number" min="1" value="${s.mttr_target_minutes||120}"><div style="font-size:11px;color:var(--muted);margin-top:3px">Bar is green when actual MTTR &le; this.</div></div>
-${_user?.role==='admin'?'<button class="btn btn-p" style="align-self:flex-start" onclick="saveSets()">Save Settings</button>':'<p style="font-size:12px;color:var(--muted)">Requires Admin role.</p>'}
-</div></div>`;
+${isAdmin?'<button class="btn btn-p" style="align-self:flex-start" onclick="saveSets()">Save Settings</button>':'<p style="font-size:12px;color:var(--muted)">Requires Admin role.</p>'}
+</div></div>
+
+<div class="card">
+<div class="card-header"><div class="card-title">Endpoint Agent Schedule</div></div>
+<div style="font-size:11px;color:var(--muted);margin-bottom:8px">Applies to every installed SMESecurityAgent service. Changes are picked up live by each PC (no reinstall or restart) &mdash; typically within one Command Executor cycle.</div>
+<div style="display:flex;flex-direction:column">
+${moduleRow('ag-usb',a.usb_lockdown_enabled!==false,'SME-USBLockdown','Starts at boot, restarts automatically if it stops, and is started immediately when the service starts. Not intervaled &mdash; on/off only.')}
+${moduleRow('ag-proc',a.process_monitor_enabled!==false,'SME-ProcessMonitor','Starts at boot, restarts automatically if it stops, and is started immediately when the service starts. Not intervaled &mdash; on/off only.')}
+${moduleRow('ag-defdns',a.defender_dns_enabled!==false,'SME-DefenderAudit &amp; SME-DNSAudit',null,numRow('ag-defdns-h','Interval (hours)',a.defender_dns_interval_hours||24))}
+${moduleRow('ag-threat',a.threat_enabled!==false,'SME-ThreatReporter',null,numRow('ag-threat-m','Interval (minutes)',a.threat_interval_minutes||5))}
+${moduleRow('ag-timeline',a.timeline_enabled!==false,'SME-TimelineCollector',null,`${numRow('ag-timeline-m','Interval (minutes)',a.timeline_interval_minutes||30)}${numRow('ag-timeline-h','Lookback window (hours)',a.timeline_lookback_hours||24,'How far back each collection run queries the Windows Event Log.')}`)}
+<div style="display:flex;flex-direction:column;gap:8px;padding:10px 0;border-bottom:1px solid var(--border)">
+  <div style="font-size:13px;font-weight:600">SME-Reporter</div>
+  <div style="font-size:11px;color:var(--muted)">Uploads whatever reports exist to Oracle. Always on. Use the &#8593; Report button on a device in Live Status to run it once immediately instead of waiting for the interval.</div>
+  <div style="max-width:280px">${numRow('ag-rep-m','Interval (minutes)',a.reporter_interval_minutes||15)}</div>
+</div>
+${moduleRow('ag-cmd',a.command_executor_enabled!==false,'SME-CommandExecutor','Enables remote commands issued from this dashboard (Audit, Report, Enforce, Isolate, Restore). Turning this off only pauses command execution on the PC &mdash; the schedule check itself keeps running, so this can always be turned back on remotely.',numRow('ag-cmd-m','Interval (minutes)',a.command_executor_interval_minutes||5))}
+</div>
+${isAdmin?'<button class="btn btn-p" style="margin-top:14px" onclick="saveAgentSchedule()">Save Agent Schedule</button>':'<p style="font-size:12px;color:var(--muted);margin-top:10px">Requires Admin role.</p>'}
+${a.updated_at?`<div style="font-size:11px;color:var(--muted);margin-top:8px">Last saved ${fmtAge(a.updated_at)} by ${esc(a.updated_by||'-')}</div>`:''}
+</div>
+</div>`;
 }
 
 async function saveSets(){
   const body={org_name:document.getElementById('so')?.value?.trim(),offline_threshold_hours:parseInt(document.getElementById('soh')?.value)||1,offline_days_warning:parseInt(document.getElementById('sow')?.value)||7,mttd_target_minutes:parseInt(document.getElementById('sm')?.value)||30,mttr_target_minutes:parseInt(document.getElementById('smt')?.value)||120};
   const r=await api('/api/settings',{method:'PUT',body:JSON.stringify(body)});
   if(r.ok){document.getElementById('org-name').textContent=body.org_name||'SME Security';alert('Saved!');}
+  else{const d=await r.json().catch(()=>({detail:'Error'}));alert('Failed: '+d.detail);}
+}
+
+async function saveAgentSchedule(){
+  const gv=id=>document.getElementById(id)?.value;
+  const gc=id=>!!document.getElementById(id)?.checked;
+  const body={
+    usb_lockdown_enabled:gc('ag-usb'),
+    process_monitor_enabled:gc('ag-proc'),
+    defender_dns_enabled:gc('ag-defdns'),defender_dns_interval_hours:parseInt(gv('ag-defdns-h'))||24,
+    threat_enabled:gc('ag-threat'),threat_interval_minutes:parseInt(gv('ag-threat-m'))||5,
+    timeline_enabled:gc('ag-timeline'),timeline_interval_minutes:parseInt(gv('ag-timeline-m'))||30,timeline_lookback_hours:parseInt(gv('ag-timeline-h'))||24,
+    reporter_interval_minutes:parseInt(gv('ag-rep-m'))||15,
+    command_executor_enabled:gc('ag-cmd'),command_executor_interval_minutes:parseInt(gv('ag-cmd-m'))||5,
+  };
+  const r=await api('/api/agent-schedule',{method:'PUT',body:JSON.stringify(body)});
+  if(r.ok){alert('Agent schedule saved! Endpoint agents will pick this up within one Command Executor cycle.');renderSettings(document.getElementById('content'));}
   else{const d=await r.json().catch(()=>({detail:'Error'}));alert('Failed: '+d.detail);}
 }
 
