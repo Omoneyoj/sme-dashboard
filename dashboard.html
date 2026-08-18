@@ -176,12 +176,12 @@ tr:hover .iac{opacity:1;}
   <div class="sidebar-nav">
     <div class="nav-section-label">Monitoring</div>
     <button class="nav-item active" data-page="overview"   onclick="goTo('overview')"><span class="icon">&#x1F4CA;</span>Overview</button>
-    <button class="nav-item"        data-page="status"     onclick="goTo('status')"><span class="icon">&#x1F5A5;</span>Live Status</button>
     <button class="nav-item"        data-page="inventory"  onclick="goTo('inventory')"><span class="icon">&#x1F4CB;</span>Inventory</button>
     <button class="nav-item"        data-page="alerts"     onclick="goTo('alerts')"><span class="icon">&#x1F6A8;</span>Alerts<span class="nav-badge" id="ab" style="display:none">0</span></button>
     <div class="nav-section-label" style="margin-top:8px">Management</div>
     <button class="nav-item" data-page="apps"        onclick="goTo('apps')"><span class="icon">&#x1F4E6;</span>App Inventory</button>
     <button class="nav-item" data-page="enforcement" onclick="goTo('enforcement')"><span class="icon">&#x1F512;</span>Enforcement</button>
+    <button class="nav-item" data-page="updates"     onclick="goTo('updates')"><span class="icon">&#x1F6E0;</span>Updates</button>
     <button class="nav-item" data-page="rules"       onclick="goTo('rules')"><span class="icon">&#x1F4D0;</span>Detection Rules</button>
     <div id="admin-nav" style="display:none">
       <div class="nav-section-label" style="margin-top:8px">Admin</div>
@@ -269,7 +269,7 @@ let _selA=new Set(),_editR=null,_editU=null,_page='overview';
 let _charts={};
 let _siteCtx=null; // OEM admin's currently-selected org for Settings/Users (null = OEM-global / all orgs)
 let _orgs=[]; // cached organization list, oem_admin only
-const PTITLES={overview:'Overview',status:'Live Status',inventory:'Inventory',alerts:'Alerts',apps:'App Inventory',enforcement:'Enforcement',rules:'Detection Rules',users:'User Management',settings:'Settings',orgs:'Organizations'};
+const PTITLES={overview:'Overview',inventory:'Inventory',alerts:'Alerts',apps:'App Inventory',enforcement:'Enforcement',updates:'Updates',rules:'Detection Rules',users:'User Management',settings:'Settings',orgs:'Organizations'};
 
 function pTS(s){if(!s)return null;const hasTz=/Z$|[+-]\d{2}:\d{2}$/.test(s);const d=new Date(hasTz?s:s+'Z');return isNaN(d)?null:d;}
 function fmtTS(s){const d=pTS(s);return d?d.toLocaleString():'-';}
@@ -362,11 +362,11 @@ async function refreshAll(){
 function renderPage(){
   const el=document.getElementById('content');
   if(_page==='overview')renderOverview(el);
-  else if(_page==='status')renderStatus(el);
   else if(_page==='inventory')renderInventory(el);
   else if(_page==='alerts')renderAlerts(el);
   else if(_page==='apps')renderApps(el);
   else if(_page==='enforcement')renderEnforcement(el);
+  else if(_page==='updates')renderUpdates(el);
   else if(_page==='rules')renderRules(el);
   else if(_page==='users')renderUsers(el);
   else if(_page==='settings')renderSettings(el);
@@ -440,30 +440,109 @@ async function renderOverview(el){
   }catch(ex){el.innerHTML=`<div class="empty">Error: ${ex}</div>`;}
 }
 
-function renderStatus(el){
+function renderEnforcement(el){
+  const canC=_user?.perms?.includes('commands');
   if(!_M.length){el.innerHTML='<div class="empty">No machines reporting yet</div>';return;}
-  const ML={defender:'DEF',dns:'DNS',usb:'USB',process_monitor:'PROC',threat:'THREAT'};
-  el.innerHTML=`<div class="stat-grid">${_M.map(m=>{
-    const mds=Object.entries(ML).map(([k,l])=>{const mod=m.modules[k];const c=mod?.compliant===true?'ok':mod?.compliant===false?'fail':'unk';return `<span class="mod-dot md-${c}" title="${l}"></span>`;}).join(' ');
-    const se=eA(m.site_name),he=eA(m.hostname);const canC=_user?.perms?.includes('commands');
-    return `<div class="card"><div class="card-header"><div><div style="font-weight:700;font-size:14px">${esc(m.hostname)}</div><div style="font-size:11px;color:var(--muted)">${esc(m.site_name)}</div></div><span class="badge ${m.alerts?.length?'b-red':'b-green'}">${m.alerts?.length||0} alerts</span></div>
-<div style="display:flex;gap:4px;margin-bottom:12px">${mds}</div>
-${canC?`<div class="btn-row">
-  <button class="btn btn-g" style="font-size:11px" onclick="cmd('${se}','${he}','force_audit',this)">&#x21BA; Audit</button>
-  <button class="btn btn-g" style="font-size:11px" onclick="cmd('${se}','${he}','force_report',this)">&#x2191; Report</button>
-  <button class="btn btn-s" style="font-size:11px" onclick="cmd('${se}','${he}','enable_enforcement',this)">&#x2713; Enforce</button>
-  <button class="btn btn-d" style="font-size:11px" onclick="cmd('${se}','${he}','isolate_host',this)">&#x26A1; Isolate</button>
-  <button class="btn btn-g" style="font-size:11px" onclick="cmd('${se}','${he}','restore_network',this)">&#x21A9; Restore</button></div>
-<div class="cmd-st" style="font-size:11px;color:var(--muted);margin-top:6px;min-height:14px"></div>`:''}
-</div>`;}).join('')}</div>`;
+  const modDot=(m,k,label)=>{const mod=m.modules?.[k];const c=mod?.compliant===true?'ok':mod?.compliant===false?'fail':'unk';return `<span class="mod-dot md-${c}" title="${label}"></span>`;};
+  const enforcingCount=_M.filter(m=>m.enforce===true).length;
+  el.innerHTML=`<div style="margin-bottom:16px;max-width:760px">
+<h2 style="font-size:15px;font-weight:700;margin-bottom:6px">Enforcement</h2>
+<p style="font-size:12px;color:var(--muted);line-height:1.6">One switch per device controls whether findings are just logged (<strong>Audit Only</strong>) or actively acted on (<strong>Enforcing</strong>): Windows Defender findings get auto-remediated, DNS gets pinned to a secure resolver, and USB Lockdown / Process Monitor actually terminate malicious activity instead of only alerting on it. Audit Only is the safe default &mdash; review a device's findings before turning enforcement on for it.</p>
+<div style="font-size:12px;color:var(--muted);margin-top:8px">${enforcingCount} of ${_M.length} device(s) enforcing</div>
+</div>
+${canC?`<div class="btn-row" style="margin-bottom:14px">
+<button class="btn btn-s" onclick="bulkEnforce('enable_enforcement')">&#x2713; Enable Enforcement on All</button>
+<button class="btn btn-g" onclick="bulkEnforce('disable_enforcement')">Disable Enforcement on All</button>
+</div>`:''}
+<div class="table-wrap"><table><thead><tr><th>Device</th><th>Site</th><th>Enforcement</th><th>Defender</th><th>DNS</th><th>USB</th><th>Process Mon.</th><th>Last Audit</th><th>Alerts</th>${canC?'<th></th>':''}</tr></thead>
+<tbody>${_M.map(m=>{
+  const se=eA(m.site_name),he=eA(m.hostname);
+  const enforcing=m.enforce===true;
+  const lastAudit=m.modules?.defender?.received_at||m.enforce_checked_at;
+  return `<tr>
+<td><strong style="cursor:pointer" onclick="openDev('${se}','${he}')">${esc(m.hostname)}</strong></td>
+<td style="font-size:12px;color:var(--muted)">${esc(m.site_name)}</td>
+<td><span class="badge ${enforcing?'b-green':'b-muted'}">${enforcing?'Enforcing':'Audit Only'}</span></td>
+<td>${modDot(m,'defender','Defender')}</td><td>${modDot(m,'dns','DNS')}</td><td>${modDot(m,'usb','USB Lockdown')}</td><td>${modDot(m,'process_monitor','Process Monitor')}</td>
+<td style="font-size:11px;color:var(--muted)">${fmtAge(lastAudit)}</td>
+<td><span class="badge ${m.alerts?.length?'b-red':'b-green'}">${m.alerts?.length||0}</span></td>
+${canC?`<td class="iac">
+<button class="btn ${enforcing?'btn-g':'btn-s'}" style="font-size:11px" onclick="cmd('${se}','${he}','${enforcing?'disable_enforcement':'enable_enforcement'}',this,'enf-st')">${enforcing?'Disable':'Enable'}</button>
+<button class="btn btn-g" style="font-size:11px" onclick="cmd('${se}','${he}','force_audit',this,'enf-st')">&#x21BA; Audit Now</button>
+</td>`:''}
+</tr>`;}).join('')}</tbody></table></div>
+<div class="cmd-st" id="enf-st" style="font-size:11px;color:var(--muted);margin-top:8px;min-height:14px"></div>`;
 }
 
-async function cmd(site,host,command,btn){
-  btn.disabled=true;const st=btn.closest('.card').querySelector('.cmd-st');
+async function bulkEnforce(action){
+  const verb=action==='enable_enforcement'?'Enable':'Disable';
+  if(!confirm(`${verb} enforcement on all ${_M.length} device(s)? This applies to Defender remediation, DNS filtering, USB Lockdown, and Process Monitor together.`))return;
+  const st=document.getElementById('enf-st');
+  if(st)st.textContent=`Queuing on ${_M.length} device(s)...`;
+  for(const m of _M){
+    try{await api('/api/command',{method:'POST',body:JSON.stringify({site_name:m.site_name,hostname:m.hostname,command:action})});}
+    catch(ex){/* keep going — one device failing shouldn't stop the rest */}
+  }
+  if(st)st.textContent=`${verb}d on ${_M.length} device(s). Refreshing...`;
+  setTimeout(()=>refreshAll(),1500);
+}
+
+function renderUpdates(el){
+  const canC=_user?.perms?.includes('commands');
+  if(!_M.length){el.innerHTML='<div class="empty">No machines reporting yet</div>';return;}
+  el.innerHTML=`<div style="margin-bottom:16px;max-width:780px">
+<h2 style="font-size:15px;font-weight:700;margin-bottom:6px">Updates</h2>
+<p style="font-size:12px;color:var(--muted);line-height:1.6">Tracks three categories per device: Windows Defender signature freshness (auto-updates whenever stale, regardless of Enforcement), Windows Update security/critical patches, and third-party app updates via winget for allow-listed packages only. Installing Windows Updates or app updates requires <strong>Enforcement</strong> to be ON for that device (see the Enforcement tab) &mdash; Defender signatures update either way. Configure severity categories, maintenance windows, and the app allow-list under Settings &gt; Update Policy.</p>
+</div>
+${canC?`<div class="btn-row" style="margin-bottom:14px"><button class="btn btn-g" onclick="bulkUpdateCheck()">&#x21BA; Check Updates on All</button></div>`:''}
+<div class="table-wrap"><table><thead><tr><th>Device</th><th>Site</th><th>Defender Sig Age</th><th>Windows Update</th><th>Reboot</th><th>App Updates</th><th>Last Checked</th>${canC?'<th></th>':''}</tr></thead>
+<tbody>${_M.map(m=>{
+  const se=eA(m.site_name),he=eA(m.hostname);
+  const u=m.updates_summary||{};
+  const sigAge=u.signature_age_hours;
+  const sigBadge=(sigAge===null||sigAge===undefined)?'<span class="badge b-muted">No data</span>':
+    `<span class="badge ${u.signature_compliant?'b-green':'b-red'}">${Number(sigAge).toFixed(1)}h</span>`;
+  const wuPending=u.wu_pending_count;
+  const wuBadge=(wuPending===null||wuPending===undefined)?'<span class="badge b-muted">No data</span>':
+    `<span class="badge ${u.wu_critical_count>0?'b-red':wuPending>0?'b-amber':'b-green'}">${wuPending} pending${u.wu_critical_count?` (${u.wu_critical_count} critical)`:''}</span>`;
+  const rebootBadge=u.wu_pending_reboot===true?'<span class="badge b-amber">Pending</span>':
+    (u.wu_pending_reboot===false?'<span class="badge b-green">No</span>':'<span class="badge b-muted">-</span>');
+  const appBadge=(u.app_upgrade_count===null||u.app_upgrade_count===undefined)?'<span class="badge b-muted">No data</span>':
+    `<span class="badge ${u.app_approved_pending>0?'b-amber':'b-muted'}">${u.app_upgrade_count} available${u.app_approved_pending?`, ${u.app_approved_pending} approved`:''}</span>`;
+  return `<tr>
+<td><strong style="cursor:pointer" onclick="openDev('${se}','${he}')">${esc(m.hostname)}</strong></td>
+<td style="font-size:12px;color:var(--muted)">${esc(m.site_name)}</td>
+<td>${sigBadge}</td>
+<td>${wuBadge}</td>
+<td>${rebootBadge}</td>
+<td>${appBadge}</td>
+<td style="font-size:11px;color:var(--muted)">${fmtAge(u.checked_at)}</td>
+${canC?`<td class="iac"><button class="btn btn-g" style="font-size:11px" onclick="cmd('${se}','${he}','force_update_check',this,'upd-st')">&#x21BA; Check Now</button></td>`:''}
+</tr>`;}).join('')}</tbody></table></div>
+<div class="cmd-st" id="upd-st" style="font-size:11px;color:var(--muted);margin-top:8px;min-height:14px"></div>`;
+}
+
+async function bulkUpdateCheck(){
+  if(!confirm(`Check updates on all ${_M.length} device(s) now?`))return;
+  const st=document.getElementById('upd-st');
+  if(st)st.textContent=`Queuing on ${_M.length} device(s)...`;
+  for(const m of _M){
+    try{await api('/api/command',{method:'POST',body:JSON.stringify({site_name:m.site_name,hostname:m.hostname,command:'force_update_check'})});}
+    catch(ex){/* keep going */}
+  }
+  if(st)st.textContent=`Queued on ${_M.length} device(s). This can take a while per device — refresh later to see results.`;
+}
+
+async function cmd(site,host,command,btn,statusEl){
+  btn.disabled=true;
+  const st=statusEl?document.getElementById(statusEl):btn.closest('.card')?.querySelector('.cmd-st');
   if(st)st.textContent='Sending...';
   try{const r=await api('/api/command',{method:'POST',body:JSON.stringify({site_name:site,hostname:host,command})});
     if(!r.ok){const d=await r.json();if(st)st.textContent='Error: '+(d.detail||r.status);}
-    else if(st)st.textContent=`"${command}" queued`;
+    else{
+      if(st)st.textContent=`"${command}" queued`;
+      if(command==='enable_enforcement'||command==='disable_enforcement')setTimeout(()=>refreshAll(),1500);
+    }
   }catch(ex){if(st)st.textContent='Error: '+ex;}finally{btn.disabled=false;}
 }
 
@@ -505,13 +584,25 @@ async function openDev(site,hostname){
     t.classList.add('active');document.getElementById('sub-'+t.dataset.s).classList.add('active');
   }));
   const dev=d.device||{};
+  const canC=_user?.perms?.includes('commands');
+  const se=eA(site),he=eA(hostname);
   document.getElementById('sub-dp').innerHTML=`<div class="grid2" style="margin-bottom:14px">
 <div class="prop"><div class="pl">Hostname</div><div class="pv">${esc(dev.hostname||'-')}</div></div>
 <div class="prop"><div class="pl">Site</div><div class="pv">${esc(dev.site_name||'-')}</div></div>
 <div class="prop"><div class="pl">OS</div><div class="pv" style="font-size:12px">${esc(dev.os||'-')}</div></div>
 <div class="prop"><div class="pl">Agent</div><div class="pv">${esc(dev.agent_version||'-')}</div></div>
 <div class="prop"><div class="pl">First Seen</div><div class="pv" style="font-size:12px">${fmtTS(dev.first_seen)}</div></div>
-<div class="prop"><div class="pl">Last Seen</div><div class="pv" style="font-size:12px">${fmtTS(dev.last_seen)}</div></div></div>`;
+<div class="prop"><div class="pl">Last Seen</div><div class="pv" style="font-size:12px">${fmtTS(dev.last_seen)}</div></div></div>
+${canC?`<div class="prop" style="margin-bottom:0">
+<div class="pl" style="margin-bottom:8px">Actions</div>
+<div class="btn-row">
+<button class="btn btn-g" onclick="cmd('${se}','${he}','force_report',this,'dev-cmd-st')">&#x2191; Report Now</button>
+<button class="btn btn-d" onclick="cmd('${se}','${he}','isolate_host',this,'dev-cmd-st')">&#x26A1; Isolate</button>
+<button class="btn btn-g" onclick="cmd('${se}','${he}','restore_network',this,'dev-cmd-st')">&#x21A9; Restore Network</button>
+</div>
+<div style="font-size:11px;color:var(--muted);margin-top:6px">Report Now pushes this device's latest data to the dashboard immediately, without waiting for the scheduled interval. Isolate blocks all network traffic except the agent's own connection to Oracle &mdash; use Restore Network to reverse it. For enforcement mode (Defender/DNS/USB/Process auto-remediation) and audit-now, see the Enforcement tab.</div>
+<div class="cmd-st" id="dev-cmd-st" style="font-size:11px;color:var(--muted);margin-top:6px;min-height:14px"></div>
+</div>`:''}`;
   const als=d.alerts||[];
   document.getElementById('sub-da').innerHTML=als.length?als.map(a=>`<div style="padding:8px 0;border-bottom:1px solid var(--border);cursor:pointer" onclick='oA(${JSON.stringify(JSON.stringify(a))})'>
 <div style="display:flex;justify-content:space-between"><span style="font-size:13px;font-weight:500">${esc(a.threat_name||'?')}</span><span class="badge ${stC(a.status||'New')}">${a.status||'New'}</span></div>
@@ -953,7 +1044,7 @@ async function blkUninst(){
   if(r.ok){const d=await r.json();alert(`Queued ${d.count} uninstall(s).`);}
 }
 
-function renderEnforcement(el){el.innerHTML='<div class="card"><div class="card-header"><div class="card-title">Layered Enforcement</div></div><div class="empty" style="padding:24px">Use Live Status commands for immediate actions. Global/site/machine policy settings coming soon.</div></div>';}
+
 
 function rulesQS(){
   // oem_admin edits the OEM-global rule set; a site-scoped user always
@@ -1205,11 +1296,12 @@ async function renderSettings(el){
     const orgR=await api('/api/organizations');
     if(orgR.ok)_orgs=(await orgR.json()).organizations||[];
   }
-  const [r,ar,rp,ai]=await Promise.all([api('/api/settings'+siteQS),api('/api/agent-schedule'+siteQS),api('/api/retention-policy'+siteQS),api('/api/ai-settings')]);
+  const [r,ar,rp,ai,up]=await Promise.all([api('/api/settings'+siteQS),api('/api/agent-schedule'+siteQS),api('/api/retention-policy'+siteQS),api('/api/ai-settings'),api('/api/update-policy'+siteQS)]);
   const s=r.ok?await r.json():{};
   const a=ar.ok?await ar.json():{};
   const p=rp.ok?await rp.json():{};
   const ais=ai.ok?await ai.json():{};
+  const upo=up.ok?await up.json():{};
   const chk=(id,checked)=>`<input type="checkbox" id="${id}" ${checked?'checked':''} ${isAdmin?'':'disabled'} style="accent-color:var(--blue);width:14px;height:14px">`;
   const numRow=(id,label,val,note)=>`<div class="ff"><div class="fl">${label}</div><input id="${id}" class="fip" type="number" min="1" value="${val}" ${isAdmin?'':'disabled'}>${note?`<div style="font-size:11px;color:var(--muted);margin-top:3px">${note}</div>`:''}</div>`;
   const moduleRow=(chkId,checked,label,note,intervalHtml)=>`
@@ -1276,6 +1368,48 @@ ${moduleRow('ag-cmd',a.command_executor_enabled!==false,'SME-CommandExecutor','E
 </div>
 ${isAdmin?`<div class="btn-row" style="margin-top:14px"><button class="btn btn-p" onclick="saveAgentSchedule()">Save Agent Schedule</button>${inSiteContext&&a.is_site_override?'<button class="btn btn-g" onclick="clearAgentSchedule()">Reset to OEM Default</button>':''}</div>`:'<p style="font-size:12px;color:var(--muted);margin-top:10px">Requires Admin role.</p>'}
 ${a.updated_at?`<div style="font-size:11px;color:var(--muted);margin-top:8px">Last saved ${fmtAge(a.updated_at)} by ${esc(a.updated_by||'-')}</div>`:''}
+</div>
+
+<div class="card">
+<div class="card-header"><div class="card-title">Update Policy</div>${layerChip(upo.is_site_override)}</div>
+<div style="font-size:11px;color:var(--muted);margin-bottom:12px">Controls Defender signature freshness, Windows Update, and third-party app updates via winget for every device. See the Updates tab for live per-device status.</div>
+
+<div style="padding:10px 0;border-bottom:1px solid var(--border)">
+<label style="display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;cursor:pointer;margin-bottom:8px">${chk('up-ds-en',upo.defender_signatures?.enabled!==false)} Defender Signature Freshness</label>
+<label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;margin:6px 0 8px 22px">${chk('up-ds-auto',upo.defender_signatures?.auto_update!==false)} Auto-update signatures when stale (independent of Enforcement &mdash; pure defense data, no compatibility risk)</label>
+<div style="margin-left:22px;max-width:280px">${numRow('up-ds-age','Max signature age (hours)',upo.defender_signatures?.max_age_hours||24)}</div>
+</div>
+
+<div style="padding:10px 0;border-bottom:1px solid var(--border)">
+<label style="display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;cursor:pointer;margin-bottom:8px">${chk('up-wu-en',upo.windows_updates?.enabled!==false)} Windows Update</label>
+<label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;margin:6px 0 8px 22px">${chk('up-wu-auto',upo.windows_updates?.auto_install===true)} Auto-install approved categories when Enforcement is ON for a device. Feature/Upgrade updates are never auto-installed, no matter what.</label>
+<div style="margin-left:22px;margin-bottom:8px">
+<div class="fl" style="margin-bottom:4px">Approved severity categories</div>
+${['Critical','Important','Moderate','Low'].map(c=>`<label style="display:inline-flex;align-items:center;gap:5px;font-size:12px;margin-right:14px;cursor:pointer">${chk('up-wu-cat-'+c,(upo.windows_updates?.categories||['Critical','Important']).includes(c))} ${c}</label>`).join('')}
+</div>
+<div style="margin-left:22px;display:grid;grid-template-columns:1fr 1fr;gap:10px;max-width:360px">
+<div class="ff"><div class="fl">Maintenance window start</div><input id="up-wu-start" class="fip" placeholder="02:00" value="${esc(upo.windows_updates?.maintenance_window?.start||'')}" ${isAdmin?'':'disabled'}></div>
+<div class="ff"><div class="fl">end</div><input id="up-wu-end" class="fip" placeholder="05:00" value="${esc(upo.windows_updates?.maintenance_window?.end||'')}" ${isAdmin?'':'disabled'}></div>
+</div>
+<div style="margin-left:22px;margin-top:8px">
+<div class="fl" style="margin-bottom:4px">Days (blank = every day)</div>
+${['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map(d=>`<label style="display:inline-flex;align-items:center;gap:5px;font-size:12px;margin-right:10px;cursor:pointer">${chk('up-wu-day-'+d,(upo.windows_updates?.maintenance_window?.days||[]).includes(d))} ${d}</label>`).join('')}
+</div>
+<div style="font-size:11px;color:var(--muted);margin-left:22px;margin-top:6px">Leave both start/end blank for no time restriction (installs whenever a check runs and Enforcement is on).</div>
+<label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;margin:10px 0 0 22px">${chk('up-wu-reboot',upo.windows_updates?.auto_reboot===true)} Auto-reboot if an installed update requires it</label>
+</div>
+
+<div style="padding:10px 0">
+<label style="display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;cursor:pointer;margin-bottom:8px">${chk('up-app-en',upo.app_updates?.enabled!==false)} Application Updates (winget)</label>
+<label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;margin:6px 0 8px 22px">${chk('up-app-auto',upo.app_updates?.auto_update===true)} Auto-update allow-listed apps when Enforcement is ON for a device</label>
+<div class="ff" style="margin-left:22px"><div class="fl">Allow-listed winget package IDs (comma-separated)</div>
+<input id="up-app-list" class="fip" value="${esc((upo.app_updates?.allow_list||[]).join(', '))}" placeholder="Google.Chrome, Mozilla.Firefox, 7zip.7zip" ${isAdmin?'':'disabled'}>
+<div style="font-size:11px;color:var(--muted);margin-top:3px">Only these package IDs are ever auto-updated, regardless of what winget reports as available. Find an ID with <code>winget search &lt;name&gt;</code> on any Windows machine.</div>
+</div>
+</div>
+
+${isAdmin?`<div class="btn-row" style="margin-top:14px"><button class="btn btn-p" onclick="saveUpdatePolicy()">Save Update Policy</button>${inSiteContext&&upo.is_site_override?'<button class="btn btn-g" onclick="clearUpdatePolicy()">Reset to OEM Default</button>':''}</div>`:'<p style="font-size:12px;color:var(--muted);margin-top:10px">Requires Admin role.</p>'}
+${upo.updated_at?`<div style="font-size:11px;color:var(--muted);margin-top:8px">Last saved ${fmtAge(upo.updated_at)} by ${esc(upo.updated_by||'-')}</div>`:''}
 </div>
 
 <div class="card">
@@ -1461,6 +1595,39 @@ async function saveRetention(){
 async function clearRetention(){
   if(!confirm('Revert to the OEM default Retention Policy? This organization\'s own overrides will be discarded.'))return;
   const r=await api('/api/retention-policy'+settingsSiteQS(),{method:'DELETE'});
+  if(r.ok)renderSettings(document.getElementById('content'));
+  else{const d=await r.json().catch(()=>({detail:'Error'}));alert('Failed: '+d.detail);}
+}
+
+async function saveUpdatePolicy(){
+  const gv=id=>document.getElementById(id)?.value;
+  const gc=id=>!!document.getElementById(id)?.checked;
+  const cats=['Critical','Important','Moderate','Low'].filter(c=>gc('up-wu-cat-'+c));
+  const days=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].filter(d=>gc('up-wu-day-'+d));
+  const start=(gv('up-wu-start')||'').trim(),end=(gv('up-wu-end')||'').trim();
+  const body={
+    defender_signatures:{
+      enabled:gc('up-ds-en'), auto_update:gc('up-ds-auto'),
+      max_age_hours:parseInt(gv('up-ds-age'))||24,
+    },
+    windows_updates:{
+      enabled:gc('up-wu-en'), auto_install:gc('up-wu-auto'),
+      categories:cats, auto_reboot:gc('up-wu-reboot'),
+      maintenance_window:(start&&end)?{days,start,end}:null,
+    },
+    app_updates:{
+      enabled:gc('up-app-en'), auto_update:gc('up-app-auto'),
+      allow_list:(gv('up-app-list')||'').split(',').map(s=>s.trim()).filter(Boolean),
+    },
+  };
+  const r=await api('/api/update-policy'+settingsSiteQS(),{method:'PUT',body:JSON.stringify(body)});
+  if(r.ok){alert('Update policy saved.');renderSettings(document.getElementById('content'));}
+  else{const d=await r.json().catch(()=>({detail:'Error'}));alert('Failed: '+d.detail);}
+}
+
+async function clearUpdatePolicy(){
+  if(!confirm('Revert to the OEM default Update Policy? This organization\'s own overrides will be discarded.'))return;
+  const r=await api('/api/update-policy'+settingsSiteQS(),{method:'DELETE'});
   if(r.ok)renderSettings(document.getElementById('content'));
   else{const d=await r.json().catch(()=>({detail:'Error'}));alert('Failed: '+d.detail);}
 }

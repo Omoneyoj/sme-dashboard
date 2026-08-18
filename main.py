@@ -73,7 +73,7 @@ AI_MODEL_CHOICES = [
 DEFAULT_AI_SETTINGS = {"model": "claude-sonnet-5", "api_key": ""}
 
 ALLOWED_COMMANDS = {
-    "force_audit", "force_report", "enable_enforcement", "disable_enforcement",
+    "force_audit", "force_report", "force_update_check", "enable_enforcement", "disable_enforcement",
     "isolate_host", "restore_network", "kill_process", "apply_policy",
     "update_rules", "uninstall_app", "sanction_app",
 }
@@ -164,6 +164,32 @@ DEFAULT_RETENTION_POLICY = {
         "prefix":     "retained/",
     },
     "sweep_interval_hours": 24,  # how often the dashboard opportunistically re-runs the cloud sweep
+}
+
+# Update Management policy — layered the same way as everything above
+# (OEM-global default at UPDATE_POLICY_KEY, optional per-site override at
+# {stem}/sites/{site}.json), and read directly by each endpoint agent —
+# see agent.py's UpdatePolicyStore / update_checker.py. Defender signature
+# auto-update defaults ON (pure defense benefit, no compatibility risk);
+# Windows Update and app auto-install both default OFF, matching this
+# platform's "audit-only until explicit admin opt-in" rule for anything
+# that can actually break a machine. Mirrors update_checker.py's own
+# DEFAULT_POLICY exactly — keep the two in sync if either changes.
+UPDATE_POLICY_KEY = "config/update_policy.json"
+DEFAULT_UPDATE_POLICY = {
+    "defender_signatures": {
+        "enabled": True, "max_age_hours": 24, "auto_update": True,
+    },
+    "windows_updates": {
+        "enabled": True, "auto_install": False,
+        "categories": ["Critical", "Important"],   # severities eligible for auto_install — Feature/Upgrade updates are NEVER auto-installed regardless
+        "maintenance_window": None,                # {"days": ["Sat","Sun"], "start": "02:00", "end": "05:00"} local time, or None = no restriction
+        "auto_reboot": False,
+    },
+    "app_updates": {
+        "enabled": True, "auto_update": False,
+        "allow_list": [],   # winget package IDs explicitly approved for auto-update — nothing updates just because winget offers it
+    },
 }
 ALLOWED_ACTIONS = [
     "alert_only", "kill_process", "isolate_host",
@@ -428,6 +454,36 @@ def fetch_status() -> list:
             "compliant":   payload.get("compliant"),
         }
         raw = payload.get("raw") or {}
+        if module == "enforcement":
+            # Surfaced at the top level (not just modules.enforcement) since
+            # the Enforcement page needs this for every machine in one
+            # cheap /api/status call, not a per-device fetch_device_detail
+            # round-trip. See agent.py task_defender_dns — this is the only
+            # place the live agent_config.json enforce toggle gets reported
+            # centrally.
+            machines[mk]["enforce"] = raw.get("enforce")
+            machines[mk]["enforce_checked_at"] = raw.get("timestamp")
+        if module == "updates":
+            # Same idea as enforcement above — the Updates page needs a
+            # per-machine summary (signature age, WU pending/critical
+            # count, pending reboot, app upgrades available) for every
+            # device in one /api/status call. See update_checker.py for
+            # the full nested detail this is extracted from; the complete
+            # raw payload is still available via fetch_device_detail's
+            # modules.updates.raw for the per-device drill-down.
+            ds = raw.get("defender_signatures") or {}
+            wu = raw.get("windows_updates") or {}
+            au = raw.get("app_updates") or {}
+            machines[mk]["updates_summary"] = {
+                "checked_at": raw.get("timestamp"),
+                "signature_age_hours":    ds.get("signature_age_hours"),
+                "signature_compliant":    ds.get("compliant"),
+                "wu_pending_count":       wu.get("pending_count"),
+                "wu_critical_count":      wu.get("critical_pending_count"),
+                "wu_pending_reboot":      wu.get("pending_reboot"),
+                "app_upgrade_count":      au.get("upgrade_count"),
+                "app_approved_pending":   au.get("approved_pending_count"),
+            }
         if module == "threat":
             for d in raw.get("detections", []):
                 machines[mk]["alerts"].append({
@@ -731,7 +787,7 @@ def fetch_device_detail(site_name: str, hostname: str) -> dict:
         return {}
     device = s3_get(client, f"{DEVICES_PREFIX}{site_name}/{hostname}.json") or {}
     ALL_MODULES = ["defender", "dns", "threat", "usb", "process_monitor",
-                   "playbook_alerts", "timeline"]
+                   "playbook_alerts", "timeline", "enforcement", "updates"]
     modules = {}
     for module in ALL_MODULES:
         key = f"{REPORTS_PREFIX}{site_name}/{hostname}/{module}/latest.json"
@@ -857,6 +913,32 @@ def _get_agent_schedule(site_name: Optional[str] = None) -> dict:
     if site_name and client:
         site_doc = s3_get(client, _site_override_key(AGENT_SCHEDULE_KEY, site_name)) or {}
         merged.update({k: v for k, v in site_doc.items() if k in DEFAULT_AGENT_SCHEDULE})
+    src = site_doc or global_doc
+    merged["updated_at"] = src.get("updated_at")
+    merged["updated_by"] = src.get("updated_by")
+    merged["is_site_override"] = bool(site_doc)
+    return merged
+
+
+def _get_update_policy(site_name: Optional[str] = None) -> dict:
+    """Merges DEFAULT_UPDATE_POLICY with the OEM-global doc, then — if
+    site_name is given — that site's own override doc on top, one level
+    deep per named section (defender_signatures/windows_updates/
+    app_updates), same layering as everywhere else. Endpoint agents read
+    the raw Oracle objects directly (see agent.py's UpdatePolicyStore);
+    this function only backs the dashboard UI."""
+    client = s3()
+    global_doc = (s3_get(client, UPDATE_POLICY_KEY) or {}) if client else {}
+    merged = json.loads(json.dumps(DEFAULT_UPDATE_POLICY))  # deep copy
+    for section in ("defender_signatures", "windows_updates", "app_updates"):
+        if isinstance(global_doc.get(section), dict):
+            merged[section].update(global_doc[section])
+    site_doc = {}
+    if site_name and client:
+        site_doc = s3_get(client, _site_override_key(UPDATE_POLICY_KEY, site_name)) or {}
+        for section in ("defender_signatures", "windows_updates", "app_updates"):
+            if isinstance(site_doc.get(section), dict):
+                merged[section].update(site_doc[section])
     src = site_doc or global_doc
     merged["updated_at"] = src.get("updated_at")
     merged["updated_by"] = src.get("updated_by")
@@ -2519,6 +2601,103 @@ async def clear_agent_schedule_override(site: Optional[str] = None, user=Depends
         except Exception:
             pass
     return JSONResponse(_get_agent_schedule(target))
+
+
+@app.get("/api/update-policy")
+async def get_update_policy(request: Request, site: Optional[str] = None):
+    """Returns the effective (OEM-global + optional site-override) Update
+    Management policy — Defender signature freshness, Windows Update
+    auto-install, and winget app auto-update settings."""
+    user = await get_user(request)
+    if not user:
+        raise HTTPException(401, "Authentication required")
+    return JSONResponse(_get_update_policy(_resolve_target_site(user, site)))
+
+
+@app.put("/api/update-policy")
+async def update_update_policy(request: Request, site: Optional[str] = None,
+                                user=Depends(require_perm("settings"))):
+    """Saves the update policy either to the OEM-global doc or to one
+    site's override doc. Loads the RAW doc at the target key (not the
+    merged effective view) so untouched fields keep inheriting live from
+    the OEM-global default instead of being frozen into the site override
+    — same pattern as settings/agent-schedule/retention-policy."""
+    body = await request.json()
+    target = _resolve_target_site(user, site)
+    if target and not _find_org(target):
+        raise HTTPException(400, f"'{target}' is not a registered organization")
+    key = UPDATE_POLICY_KEY if not target else _site_override_key(UPDATE_POLICY_KEY, target)
+    client = s3(commander=True)
+    if not client:
+        raise HTTPException(503, "Commander not configured")
+    current = s3_get(client, key) or {}
+    for section in ("defender_signatures", "windows_updates", "app_updates"):
+        if section not in body or not isinstance(body[section], dict):
+            continue
+        current.setdefault(section, {})
+        incoming = body[section]
+        if section == "defender_signatures":
+            if "enabled" in incoming:
+                current[section]["enabled"] = bool(incoming["enabled"])
+            if "auto_update" in incoming:
+                current[section]["auto_update"] = bool(incoming["auto_update"])
+            if "max_age_hours" in incoming:
+                try:
+                    v = int(incoming["max_age_hours"])
+                except (TypeError, ValueError):
+                    raise HTTPException(400, "'defender_signatures.max_age_hours' must be a whole number")
+                if v < 1:
+                    raise HTTPException(400, "'defender_signatures.max_age_hours' must be at least 1")
+                current[section]["max_age_hours"] = v
+        elif section == "windows_updates":
+            if "enabled" in incoming:
+                current[section]["enabled"] = bool(incoming["enabled"])
+            if "auto_install" in incoming:
+                current[section]["auto_install"] = bool(incoming["auto_install"])
+            if "auto_reboot" in incoming:
+                current[section]["auto_reboot"] = bool(incoming["auto_reboot"])
+            if "categories" in incoming:
+                valid = {"Critical", "Important", "Moderate", "Low"}
+                cats = [c for c in (incoming["categories"] or []) if c in valid]
+                current[section]["categories"] = cats
+            if "maintenance_window" in incoming:
+                w = incoming["maintenance_window"]
+                if w is None:
+                    current[section]["maintenance_window"] = None
+                elif isinstance(w, dict) and "start" in w and "end" in w:
+                    current[section]["maintenance_window"] = {
+                        "days": [d for d in (w.get("days") or []) if d in
+                                 ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")],
+                        "start": str(w["start"]), "end": str(w["end"]),
+                    }
+                else:
+                    raise HTTPException(400, "'windows_updates.maintenance_window' must be null or "
+                                              "{days, start, end}")
+        elif section == "app_updates":
+            if "enabled" in incoming:
+                current[section]["enabled"] = bool(incoming["enabled"])
+            if "auto_update" in incoming:
+                current[section]["auto_update"] = bool(incoming["auto_update"])
+            if "allow_list" in incoming:
+                current[section]["allow_list"] = [str(x).strip() for x in (incoming["allow_list"] or []) if str(x).strip()]
+    current["updated_at"] = datetime.datetime.utcnow().isoformat()
+    current["updated_by"] = user["username"]
+    s3_put(client, key, current)
+    return JSONResponse(_get_update_policy(target))
+
+
+@app.delete("/api/update-policy")
+async def clear_update_policy_override(site: Optional[str] = None, user=Depends(require_perm("settings"))):
+    target = _resolve_target_site(user, site)
+    if not target:
+        raise HTTPException(400, "Nothing to clear at the OEM-global layer")
+    client = s3(commander=True)
+    if client:
+        try:
+            client.delete_object(Bucket=ORACLE_BUCKET, Key=_site_override_key(UPDATE_POLICY_KEY, target))
+        except Exception:
+            pass
+    return JSONResponse(_get_update_policy(target))
 
 
 @app.get("/api/retention-policy")
