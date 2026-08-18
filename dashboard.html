@@ -188,6 +188,10 @@ tr:hover .iac{opacity:1;}
       <button class="nav-item" data-page="users"    onclick="goTo('users')"><span class="icon">&#x1F465;</span>Users</button>
       <button class="nav-item" data-page="settings" onclick="goTo('settings')"><span class="icon">&#x2699;</span>Settings</button>
     </div>
+    <div id="oem-nav" style="display:none">
+      <div class="nav-section-label" style="margin-top:8px">OEM</div>
+      <button class="nav-item" data-page="orgs" onclick="goTo('orgs')"><span class="icon">&#x1F3E2;</span>Organizations</button>
+    </div>
     <div id="analyst-nav" style="display:none">
       <div class="nav-section-label" style="margin-top:8px">Account</div>
       <button class="nav-item" data-page="settings" onclick="goTo('settings')"><span class="icon">&#x2699;</span>Settings</button>
@@ -237,6 +241,13 @@ tr:hover .iac{opacity:1;}
     <div class="modal-foot"><button class="btn btn-g" onclick="cM('um')">Cancel</button><button class="btn btn-p" onclick="saveUser()">Save</button></div>
   </div>
 </div>
+<div id="om" class="modal-overlay" style="display:none" onclick="cmo(event,'om')">
+  <div class="modal" style="max-width:440px" onclick="event.stopPropagation()">
+    <div class="modal-hdr"><span class="modal-title">Onboard Organization</span><button class="modal-x" onclick="cM('om')">&#x2715;</button></div>
+    <div class="modal-body" id="om-b"></div>
+    <div class="modal-foot"><button class="btn btn-g" onclick="cM('om')">Cancel</button><button class="btn btn-p" onclick="saveOrg()">Onboard</button></div>
+  </div>
+</div>
 <div id="rm" class="modal-overlay" style="display:none" onclick="cmo(event,'rm')">
   <div class="modal" style="max-width:700px" onclick="event.stopPropagation()">
     <div class="modal-hdr"><span class="modal-title" id="rm-t">Rule</span><button class="modal-x" onclick="cM('rm')">&#x2715;</button></div>
@@ -256,7 +267,9 @@ tr:hover .iac{opacity:1;}
 let _tok=null,_user=null,_M=[],_D=[],_A=[],_R=[];
 let _selA=new Set(),_editR=null,_editU=null,_page='overview';
 let _charts={};
-const PTITLES={overview:'Overview',status:'Live Status',inventory:'Inventory',alerts:'Alerts',apps:'App Inventory',enforcement:'Enforcement',rules:'Detection Rules',users:'User Management',settings:'Settings'};
+let _siteCtx=null; // OEM admin's currently-selected org for Settings/Users (null = OEM-global / all orgs)
+let _orgs=[]; // cached organization list, oem_admin only
+const PTITLES={overview:'Overview',status:'Live Status',inventory:'Inventory',alerts:'Alerts',apps:'App Inventory',enforcement:'Enforcement',rules:'Detection Rules',users:'User Management',settings:'Settings',orgs:'Organizations'};
 
 function pTS(s){if(!s)return null;const hasTz=/Z$|[+-]\d{2}:\d{2}$/.test(s);const d=new Date(hasTz?s:s+'Z');return isNaN(d)?null:d;}
 function fmtTS(s){const d=pTS(s);return d?d.toLocaleString():'-';}
@@ -298,11 +311,24 @@ document.getElementById('lp').addEventListener('keydown',e=>{if(e.key==='Enter')
 function initApp(){
   document.getElementById('ls').style.display='none';document.getElementById('main').style.display='block';
   document.getElementById('uname').textContent=_user.username;
-  document.getElementById('urole').textContent=_user.role;
+  document.getElementById('urole').textContent=_user.role==='oem_admin'?'OEM Admin':_user.role;
   document.getElementById('uav').textContent=(_user.username||'?')[0].toUpperCase();
-  if(_user.role==='admin')document.getElementById('admin-nav').style.display='block';
-  else if(_user.role==='analyst')document.getElementById('analyst-nav').style.display='block';
+  const orgLabel=document.getElementById('org-name');
+  if(_user.role==='oem_admin'){
+    orgLabel.textContent='All Organizations';
+    document.getElementById('oem-nav').style.display='block';
+    document.getElementById('admin-nav').style.display='block';
+  }else{
+    orgLabel.textContent=_user.org_display_name||_user.site_name||'SME Security';
+    if(_user.role==='admin')document.getElementById('admin-nav').style.display='block';
+    else if(_user.role==='analyst')document.getElementById('analyst-nav').style.display='block';
+  }
   refreshAll();setInterval(refreshAll,30000);
+  if(_user.role!=='oem_admin'){
+    api('/api/auth/me').then(r=>r.ok?r.json():null).then(me=>{
+      if(me&&me.org_display_name){_user.org_display_name=me.org_display_name;sessionStorage.setItem('sme_usr',JSON.stringify(_user));orgLabel.textContent=me.org_display_name;}
+    }).catch(()=>{});
+  }
 }
 (function(){const t=sessionStorage.getItem('sme_tok');const u=sessionStorage.getItem('sme_usr');if(t&&u){_tok=t;_user=JSON.parse(u);initApp();}})();
 
@@ -344,6 +370,7 @@ function renderPage(){
   else if(_page==='rules')renderRules(el);
   else if(_page==='users')renderUsers(el);
   else if(_page==='settings')renderSettings(el);
+  else if(_page==='orgs')renderOrgs(el);
   else el.innerHTML='<div class="empty">Page not found</div>';
 }
 
@@ -928,13 +955,21 @@ async function blkUninst(){
 
 function renderEnforcement(el){el.innerHTML='<div class="card"><div class="card-header"><div class="card-title">Layered Enforcement</div></div><div class="empty" style="padding:24px">Use Live Status commands for immediate actions. Global/site/machine policy settings coming soon.</div></div>';}
 
+function rulesQS(){
+  // oem_admin edits the OEM-global rule set; a site-scoped user always
+  // edits their own site's rule set (site-level rules layer on top of
+  // the OEM-global set for their devices — see main.py _save_rules).
+  return _user?.role==='oem_admin' ? 'scope=global' : `scope=site&site=${encodeURIComponent(_user?.site_name||'')}`;
+}
+
 async function renderRules(el){
   try{
-    const r=await api('/api/rules?scope=global');if(!r.ok){el.innerHTML='<div class="empty">Failed</div>';return;}
+    const r=await api(`/api/rules?${rulesQS()}`);if(!r.ok){el.innerHTML='<div class="empty">Failed</div>';return;}
     const{rules}=await r.json();_R=rules||[];const cC=_user?.perms?.includes('commands');
+    const scopeLabel=_user?.role==='oem_admin'?'OEM-Global':`Site: ${esc(_user?.org_display_name||_user?.site_name||'')}`;
     el.innerHTML=`<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
 <div><h2 style="font-size:15px;font-weight:700;margin-bottom:3px">Detection Rules</h2>
-<p style="font-size:12px;color:var(--muted)">Rules push to endpoints within 5 min.</p></div>
+<p style="font-size:12px;color:var(--muted)">Editing: <strong>${scopeLabel}</strong> &middot; rules push to endpoints within 5 min.</p></div>
 ${cC?'<button class="btn btn-p" onclick="openRE(null)">+ New Rule</button>':''}
 </div>
 <div class="table-wrap"><table><thead><tr><th>Name</th><th>Severity</th><th>MITRE</th><th>Conditions</th><th>Actions</th><th>Status</th>${cC?'<th></th>':''}</tr></thead>
@@ -1009,38 +1044,63 @@ async function delRule(id){
 
 async function renderUsers(el){
   try{
-    const r=await api('/api/users');if(!r.ok){el.innerHTML='<div class="empty">Access denied</div>';return;}
+    const isOem=_user?.role==='oem_admin';
+    const reqs=[api('/api/users')];
+    if(isOem)reqs.push(api('/api/organizations'));
+    const results=await Promise.all(reqs);
+    const r=results[0];
+    if(!r.ok){el.innerHTML='<div class="empty">Access denied</div>';return;}
     const{users}=await r.json();
+    if(isOem){const orgR=results[1];_orgs=orgR.ok?(await orgR.json()).organizations||[]:[];}
+    const orgName=sn=>{if(!sn)return 'OEM (no org)';const o=_orgs.find(x=>x.site_name===sn);return o?o.display_name:sn;};
+    const roleBadge=r=>r==='oem_admin'?'b-purple':r==='admin'?'b-red':r==='analyst'?'b-amber':'b-muted';
     el.innerHTML=`<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
-<h2 style="font-size:15px;font-weight:700">User Management</h2><button class="btn btn-p" onclick="openUE(null)">+ Add User</button></div>
-<div class="card"><div class="table-wrap"><table><thead><tr><th>Username</th><th>Role</th><th>Email</th><th>Created</th><th></th></tr></thead>
+<h2 style="font-size:15px;font-weight:700">User Management${isOem?'':' &mdash; '+esc(_user?.org_display_name||_user?.site_name||'')}</h2><button class="btn btn-p" onclick="openUE(null)">+ Add User</button></div>
+<div class="card"><div class="table-wrap"><table><thead><tr><th>Username</th><th>Role</th>${isOem?'<th>Organization</th>':''}<th>Email</th><th>Created</th><th></th></tr></thead>
 <tbody>${users.map(u=>`<tr>
 <td><strong>${esc(u.username)}</strong></td>
-<td><span class="badge ${u.role==='admin'?'b-red':u.role==='analyst'?'b-amber':'b-muted'}">${esc(u.role)}</span></td>
+<td><span class="badge ${roleBadge(u.role)}">${u.role==='oem_admin'?'OEM Admin':esc(u.role)}</span></td>
+${isOem?`<td style="font-size:12px;color:var(--muted)">${esc(orgName(u.site_name))}</td>`:''}
 <td style="font-size:12px;color:var(--muted)">${esc(u.email||'-')}</td>
 <td style="font-size:11px;color:var(--muted)">${fmtTS(u.created_at)}</td>
 <td class="iac"><button class="btn btn-g" style="font-size:11px" onclick='openUE(${JSON.stringify(JSON.stringify(u))})'>Edit</button>
 ${u.username!==_user?.username?`<button class="btn btn-d" style="font-size:11px" onclick="delUser('${eA(u.username)}')">Delete</button>`:''}</td>
 </tr>`).join('')}</tbody></table></div></div>
 <div style="margin-top:14px;padding:12px;background:rgba(59,130,246,.05);border:1px solid rgba(59,130,246,.15);border-radius:8px;font-size:12px;color:var(--muted2)">
-<strong>Roles:</strong> Reader (view only) &middot; Analyst (view + manage alerts) &middot; Admin (full access + manage users, apps, commands, settings)</div>`;
+<strong>Roles:</strong> Reader (view only) &middot; Analyst (view + manage alerts) &middot; Admin (full access within their own organization: users, apps, commands, settings)${isOem?' &middot; OEM Admin (every organization, plus onboarding new ones)':''}</div>`;
   }catch(ex){el.innerHTML=`<div class="empty">Error: ${ex}</div>`;}
 }
 
 function openUE(js){
   _editU=js?JSON.parse(js):null;const u=_editU;
+  const isOem=_user?.role==='oem_admin';
+  // A site-scoped admin can only ever create/edit users within their own
+  // org, and can never grant oem_admin — so its option (and the org
+  // picker) only appear for an oem_admin caller.
+  const roleOpts=isOem?['reader','analyst','admin','oem_admin']:['reader','analyst','admin'];
+  const roleLabel=r=>r==='oem_admin'?'OEM Admin':r.charAt(0).toUpperCase()+r.slice(1);
   document.getElementById('um-t').textContent=u?'Edit: '+u.username:'New User';
   document.getElementById('um-b').innerHTML=`<div style="display:flex;flex-direction:column;gap:12px">
 ${!u?'<div class="ff"><div class="fl">Username</div><input id="uu" class="fip" placeholder="username"></div>':''}
 <div class="ff"><div class="fl">Email</div><input id="ue" class="fip" type="email" value="${esc(u?.email||'')}" placeholder="user@example.com"></div>
-<div class="ff"><div class="fl">Role</div><select id="ur" class="fsel">${['reader','analyst','admin'].map(r=>`<option value="${r}" ${r===(u?.role||'reader')?'selected':''}>${r.charAt(0).toUpperCase()+r.slice(1)}</option>`).join('')}</select></div>
+<div class="ff"><div class="fl">Role</div><select id="ur" class="fsel" onchange="tglUOrg()">${roleOpts.map(r=>`<option value="${r}" ${r===(u?.role||'reader')?'selected':''}>${roleLabel(r)}</option>`).join('')}</select></div>
+${isOem?`<div class="ff" id="uorg-wrap" style="display:${(u?.role||'reader')==='oem_admin'?'none':'block'}"><div class="fl">Organization</div><select id="uorg" class="fsel">${_orgs.map(o=>`<option value="${esc(o.site_name)}" ${o.site_name===u?.site_name?'selected':''}>${esc(o.display_name)}</option>`).join('')||'<option value="">No organizations onboarded yet</option>'}</select></div>`:''}
 <div class="ff"><div class="fl">${u?'New Password (blank to keep)':'Password *'}</div><input id="upw" class="fip" type="password" placeholder="${u?'Leave blank':'New password'}"></div>
 </div>`;
   document.getElementById('um').style.display='flex';
 }
 
+function tglUOrg(){
+  const el=document.getElementById('uorg-wrap');
+  if(!el)return;
+  el.style.display=document.getElementById('ur')?.value==='oem_admin'?'none':'block';
+}
+
 async function saveUser(){
-  const body={role:document.getElementById('ur')?.value,email:document.getElementById('ue')?.value};
+  const role=document.getElementById('ur')?.value;
+  const body={role,email:document.getElementById('ue')?.value};
+  const orgSel=document.getElementById('uorg');
+  if(orgSel&&role!=='oem_admin')body.site_name=orgSel.value;
   const pw=document.getElementById('upw')?.value;if(pw)body.password=pw;
   if(_editU){
     const r=await api(`/api/users/${_editU.username}`,{method:'PUT',body:JSON.stringify(body)});
@@ -1048,6 +1108,7 @@ async function saveUser(){
     else{const d=await r.json().catch(()=>({detail:'Error'}));alert('Failed: '+d.detail);}
   }else{
     const uname=document.getElementById('uu')?.value?.trim();if(!uname||!pw){alert('Username and password required');return;}
+    if(_user?.role==='oem_admin'&&role!=='oem_admin'&&!body.site_name){alert('Select an organization, or onboard one first from the Organizations page.');return;}
     const r=await api('/api/users',{method:'POST',body:JSON.stringify({...body,username:uname,password:pw})});
     if(r.ok){cM('um');renderUsers(document.getElementById('content'));}
     else{const d=await r.json().catch(()=>({detail:'Error'}));alert('Failed: '+d.detail);}
@@ -1058,15 +1119,97 @@ async function delUser(uname){
   if(!confirm(`Delete user "${uname}"?`))return;
   const r=await api(`/api/users/${uname}`,{method:'DELETE'});
   if(r.ok)renderUsers(document.getElementById('content'));
+  else{const d=await r.json().catch(()=>({detail:'Error'}));alert('Failed: '+d.detail);}
+}
+
+// ── Organizations (OEM-only): onboard/suspend customer sites ──────────────────
+async function renderOrgs(el){
+  if(_user?.role!=='oem_admin'){el.innerHTML='<div class="empty">Access denied</div>';return;}
+  try{
+    const r=await api('/api/organizations');
+    if(!r.ok){el.innerHTML='<div class="empty">Failed to load organizations</div>';return;}
+    const{organizations}=await r.json();_orgs=organizations||[];
+    el.innerHTML=`<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+<div><h2 style="font-size:15px;font-weight:700;margin-bottom:3px">Organizations</h2>
+<p style="font-size:12px;color:var(--muted)">Each organization is an isolated site: its own devices, alerts, users, and (optionally) its own schedule/retention/rules overrides.</p></div>
+<button class="btn btn-p" onclick="openOrgOnboard()">+ Onboard Organization</button></div>
+<div class="card"><div class="table-wrap"><table><thead><tr><th>Organization</th><th>Site ID</th><th>Status</th><th>Devices</th><th>Users</th><th>Onboarded</th><th></th></tr></thead>
+<tbody>${_orgs.map(o=>`<tr>
+<td><strong>${esc(o.display_name)}</strong></td>
+<td style="font-size:11px;font-family:monospace;color:var(--muted)">${esc(o.site_name)}</td>
+<td><span class="badge ${o.status==='suspended'?'b-red':'b-green'}">${esc(o.status)}</span></td>
+<td>${o.device_count??0}</td>
+<td>${o.user_count??0}</td>
+<td style="font-size:11px;color:var(--muted)">${fmtTS(o.created_at)}</td>
+<td class="iac">
+<button class="btn btn-g" style="font-size:11px" onclick="goToOrgSettings('${eA(o.site_name)}')">Settings</button>
+<button class="btn ${o.status==='suspended'?'btn-s':'btn-d'}" style="font-size:11px" onclick="toggleOrgStatus('${eA(o.site_name)}','${o.status==='suspended'?'active':'suspended'}')">${o.status==='suspended'?'Reactivate':'Suspend'}</button>
+</td>
+</tr>`).join('')||'<tr><td colspan="7" class="empty">No organizations onboarded yet</td></tr>'}</tbody></table></div></div>`;
+  }catch(ex){el.innerHTML=`<div class="empty">Error: ${ex}</div>`;}
+}
+
+function openOrgOnboard(){
+  document.getElementById('om-b').innerHTML=`<div style="display:flex;flex-direction:column;gap:12px">
+<div class="ff"><div class="fl">Site ID *</div><input id="oo-site" class="fip" placeholder="sunrise-pharmacy"><div style="font-size:11px;color:var(--muted);margin-top:3px">Letters, numbers, '-' or '_' only. This becomes part of this org's data path in Oracle &mdash; cannot be changed later.</div></div>
+<div class="ff"><div class="fl">Display Name *</div><input id="oo-name" class="fip" placeholder="Sunrise Pharmacy Group"></div>
+<div class="sec-title" style="margin-top:6px">First Admin (optional &mdash; can add later from Users)</div>
+<div class="ff"><div class="fl">Username</div><input id="oo-user" class="fip" placeholder="admin@sunrise"></div>
+<div class="ff"><div class="fl">Email</div><input id="oo-email" class="fip" type="email" placeholder="admin@sunrisepharmacy.com"></div>
+<div class="ff"><div class="fl">Password</div><input id="oo-pass" class="fip" type="password" placeholder="Temporary password"></div>
+</div>`;
+  document.getElementById('om').style.display='flex';
+}
+
+async function saveOrg(){
+  const site_name=document.getElementById('oo-site')?.value?.trim();
+  const display_name=document.getElementById('oo-name')?.value?.trim();
+  if(!site_name||!display_name){alert('Site ID and Display Name are required');return;}
+  const body={site_name,display_name};
+  const admin_username=document.getElementById('oo-user')?.value?.trim();
+  const admin_password=document.getElementById('oo-pass')?.value;
+  if(admin_username&&admin_password){
+    body.admin_username=admin_username;body.admin_password=admin_password;
+    body.admin_email=document.getElementById('oo-email')?.value?.trim()||'';
+  }
+  const r=await api('/api/organizations',{method:'POST',body:JSON.stringify(body)});
+  if(r.ok){cM('om');renderOrgs(document.getElementById('content'));}
+  else{const d=await r.json().catch(()=>({detail:'Error'}));alert('Failed: '+d.detail);}
+}
+
+async function toggleOrgStatus(site_name,status){
+  const verb=status==='suspended'?'Suspend':'Reactivate';
+  if(!confirm(`${verb} "${site_name}"? ${status==='suspended'?'Its users will be unable to log in until reactivated.':''}`))return;
+  const r=await api(`/api/organizations/${encodeURIComponent(site_name)}`,{method:'PUT',body:JSON.stringify({status})});
+  if(r.ok)renderOrgs(document.getElementById('content'));
+  else{const d=await r.json().catch(()=>({detail:'Error'}));alert('Failed: '+d.detail);}
+}
+
+function goToOrgSettings(site_name){
+  _siteCtx=site_name;
+  goTo('settings');
 }
 
 async function renderSettings(el){
-  const [r,ar,rp,ai]=await Promise.all([api('/api/settings'),api('/api/agent-schedule'),api('/api/retention-policy'),api('/api/ai-settings')]);
+  const isAdmin=_user?.perms?.includes('settings');
+  const isOem=_user?.role==='oem_admin';
+  // For an oem_admin, _siteCtx (set via the Organizations page's
+  // "Settings" button, or the picker below) selects which layer to view/
+  // edit: null = the OEM-global default; a site_name = that org's
+  // override, layered on top of the OEM default. A site-scoped admin
+  // always edits their own org's layer — the backend enforces this
+  // regardless of any site param, so siteQS is only meaningful for oem_admin.
+  const siteQS = isOem && _siteCtx ? `?site=${encodeURIComponent(_siteCtx)}` : '';
+  const inSiteContext = !isOem || !!_siteCtx; // true = editing one org's layer, not the OEM default
+  if(isOem && !_orgs.length){
+    const orgR=await api('/api/organizations');
+    if(orgR.ok)_orgs=(await orgR.json()).organizations||[];
+  }
+  const [r,ar,rp,ai]=await Promise.all([api('/api/settings'+siteQS),api('/api/agent-schedule'+siteQS),api('/api/retention-policy'+siteQS),api('/api/ai-settings')]);
   const s=r.ok?await r.json():{};
   const a=ar.ok?await ar.json():{};
   const p=rp.ok?await rp.json():{};
   const ais=ai.ok?await ai.json():{};
-  const isAdmin=_user?.role==='admin';
   const chk=(id,checked)=>`<input type="checkbox" id="${id}" ${checked?'checked':''} ${isAdmin?'':'disabled'} style="accent-color:var(--blue);width:14px;height:14px">`;
   const numRow=(id,label,val,note)=>`<div class="ff"><div class="fl">${label}</div><input id="${id}" class="fip" type="number" min="1" value="${val}" ${isAdmin?'':'disabled'}>${note?`<div style="font-size:11px;color:var(--muted);margin-top:3px">${note}</div>`:''}</div>`;
   const moduleRow=(chkId,checked,label,note,intervalHtml)=>`
@@ -1075,6 +1218,22 @@ async function renderSettings(el){
   ${note?`<div style="font-size:11px;color:var(--muted);margin-left:22px">${note}</div>`:''}
   ${intervalHtml?`<div style="margin-left:22px;max-width:280px">${intervalHtml}</div>`:''}
 </div>`;
+  // Per-card "what layer am I looking at" chip, shown above each card's
+  // save button. isSiteOverride comes back from the backend (true only
+  // if this specific org has actually saved its own override there).
+  const layerChip=(isSiteOverride)=>{
+    if(!inSiteContext)return `<span class="badge b-muted" style="font-size:10px">OEM Default</span>`;
+    const orgLabel=isOem?(esc((_orgs.find(o=>o.site_name===_siteCtx)||{}).display_name||_siteCtx)):esc(_user?.org_display_name||_user?.site_name||'');
+    return isSiteOverride
+      ? `<span class="badge b-amber" style="font-size:10px">Override: ${orgLabel}</span>`
+      : `<span class="badge b-muted" style="font-size:10px">${orgLabel} (inheriting OEM default)</span>`;
+  };
+  const sitePicker = isOem ? `<div class="card" style="margin-bottom:-6px">
+<div class="fl" style="margin-bottom:6px">Editing settings for</div>
+<select class="fsel" onchange="_siteCtx=this.value||null;renderSettings(document.getElementById('content'))">
+<option value="" ${!_siteCtx?'selected':''}>OEM Default (applies to every org unless overridden)</option>
+${_orgs.map(o=>`<option value="${esc(o.site_name)}" ${o.site_name===_siteCtx?'selected':''}>${esc(o.display_name)}</option>`).join('')}
+</select></div>` : '';
 
   // ── Retention Policy card pieces ──
   const dest=p.move_destination||{};
@@ -1087,19 +1246,20 @@ async function renderSettings(el){
   }).join(''):'';
 
   el.innerHTML=`<div style="display:flex;flex-direction:column;gap:20px;max-width:640px">
+${sitePicker}
 <div class="card">
-<div class="card-header"><div class="card-title">Dashboard Settings</div></div>
+<div class="card-header"><div class="card-title">Dashboard Settings</div>${layerChip(s.is_site_override)}</div>
 <div style="display:flex;flex-direction:column;gap:14px">
 <div class="ff"><div class="fl">Organisation Name</div><input id="so" class="fip" value="${esc(s.org_name||'')}" placeholder="Sunrise Pharmacy Group"></div>
 <div class="ff"><div class="fl">Offline Threshold (hours)</div><input id="soh" class="fip" type="number" min="1" value="${s.offline_threshold_hours||1}"><div style="font-size:11px;color:var(--muted);margin-top:3px">Hours before device shown as Offline.</div></div>
 <div class="ff"><div class="fl">Long-Offline Warning (days)</div><input id="sow" class="fip" type="number" min="1" value="${s.offline_days_warning||7}"><div style="font-size:11px;color:var(--muted);margin-top:3px">Days before flagged on Overview.</div></div>
 <div class="ff"><div class="fl">MTTD Target (minutes)</div><input id="sm" class="fip" type="number" min="1" value="${s.mttd_target_minutes||30}"><div style="font-size:11px;color:var(--muted);margin-top:3px">Bar is green when actual MTTD &le; this.</div></div>
 <div class="ff"><div class="fl">MTTR Target (minutes)</div><input id="smt" class="fip" type="number" min="1" value="${s.mttr_target_minutes||120}"><div style="font-size:11px;color:var(--muted);margin-top:3px">Bar is green when actual MTTR &le; this.</div></div>
-${isAdmin?'<button class="btn btn-p" style="align-self:flex-start" onclick="saveSets()">Save Settings</button>':'<p style="font-size:12px;color:var(--muted)">Requires Admin role.</p>'}
+${isAdmin?`<div class="btn-row"><button class="btn btn-p" onclick="saveSets()">Save Settings</button>${inSiteContext&&s.is_site_override?'<button class="btn btn-g" onclick="clearSets()">Reset to OEM Default</button>':''}</div>`:'<p style="font-size:12px;color:var(--muted)">Requires Admin role.</p>'}
 </div></div>
 
 <div class="card">
-<div class="card-header"><div class="card-title">Endpoint Agent Schedule</div></div>
+<div class="card-header"><div class="card-title">Endpoint Agent Schedule</div>${layerChip(a.is_site_override)}</div>
 <div style="font-size:11px;color:var(--muted);margin-bottom:8px">Applies to every installed SMESecurityAgent service. Changes are picked up live by each PC (no reinstall or restart) &mdash; typically within one Command Executor cycle.</div>
 <div style="display:flex;flex-direction:column">
 ${moduleRow('ag-usb',a.usb_lockdown_enabled!==false,'SME-USBLockdown','Starts at boot, restarts automatically if it stops, and is started immediately when the service starts. Not intervaled &mdash; on/off only.')}
@@ -1114,12 +1274,12 @@ ${moduleRow('ag-timeline',a.timeline_enabled!==false,'SME-TimelineCollector',nul
 </div>
 ${moduleRow('ag-cmd',a.command_executor_enabled!==false,'SME-CommandExecutor','Enables remote commands issued from this dashboard (Audit, Report, Enforce, Isolate, Restore). Turning this off only pauses command execution on the PC &mdash; the schedule check itself keeps running, so this can always be turned back on remotely.',numRow('ag-cmd-m','Interval (minutes)',a.command_executor_interval_minutes||5))}
 </div>
-${isAdmin?'<button class="btn btn-p" style="margin-top:14px" onclick="saveAgentSchedule()">Save Agent Schedule</button>':'<p style="font-size:12px;color:var(--muted);margin-top:10px">Requires Admin role.</p>'}
+${isAdmin?`<div class="btn-row" style="margin-top:14px"><button class="btn btn-p" onclick="saveAgentSchedule()">Save Agent Schedule</button>${inSiteContext&&a.is_site_override?'<button class="btn btn-g" onclick="clearAgentSchedule()">Reset to OEM Default</button>':''}</div>`:'<p style="font-size:12px;color:var(--muted);margin-top:10px">Requires Admin role.</p>'}
 ${a.updated_at?`<div style="font-size:11px;color:var(--muted);margin-top:8px">Last saved ${fmtAge(a.updated_at)} by ${esc(a.updated_by||'-')}</div>`:''}
 </div>
 
 <div class="card">
-<div class="card-header"><div class="card-title">Retention Policy</div></div>
+<div class="card-header"><div class="card-title">Retention Policy</div>${layerChip(p.is_site_override)}</div>
 <div style="font-size:11px;color:var(--muted);margin-bottom:10px">Controls what happens to old data. Disabled by default &mdash; nothing is ever deleted or moved until an admin turns this on, mirroring how enforcement actions work elsewhere in this platform.</div>
 
 <label style="display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;cursor:pointer;margin-bottom:12px">${chk('rp-enabled',p.enabled===true)} Enable retention policy</label>
@@ -1170,14 +1330,15 @@ ${numRow('rp-interval','Auto-sweep interval (hours)',p.sweep_interval_hours||24,
 ${isAdmin?`<div class="btn-row" style="margin-top:14px">
 <button class="btn btn-p" onclick="saveRetention()">Save Retention Policy</button>
 <button class="btn btn-d" onclick="runRetentionNow(this)">Run Cloud Sweep Now</button>
+${inSiteContext&&p.is_site_override?'<button class="btn btn-g" onclick="clearRetention()">Reset to OEM Default</button>':''}
 </div>`:'<p style="font-size:12px;color:var(--muted);margin-top:10px">Requires Admin role.</p>'}
 ${p.updated_at?`<div style="font-size:11px;color:var(--muted);margin-top:8px">Last saved ${fmtAge(p.updated_at)} by ${esc(p.updated_by||'-')}</div>`:''}
 ${lr?`<div style="font-size:11px;color:var(--muted);margin-top:8px">Last cloud sweep: ${fmtAge(lr.ran_at)} (${esc(lr.trigger||'-')}, ${esc(lr.status||'-')})${lrSummary?`<div style="margin-top:4px">${lrSummary}</div>`:''}</div>`:'<div style="font-size:11px;color:var(--muted);margin-top:8px">No cloud sweep has run yet.</div>'}
 </div>
 
-<div class="card">
+${isOem?`<div class="card">
 <div class="card-header"><div class="card-title">AI Analysis</div></div>
-<div style="font-size:11px;color:var(--muted);margin-bottom:10px">Controls which Claude model powers "Analyze with AI" on alerts, and where the API key comes from. If nothing's saved here, the platform falls back to the <code>ANTHROPIC_API_KEY</code> environment variable on Render (if set) &mdash; a key saved here always takes priority.</div>
+<div style="font-size:11px;color:var(--muted);margin-bottom:10px">OEM-wide only &mdash; the model and API key apply to every organization's "Analyze with AI" alike (it's a shared billing credential, not something delegated per-org). Controls which Claude model powers alert analysis, and where the API key comes from. If nothing's saved here, the platform falls back to the <code>ANTHROPIC_API_KEY</code> environment variable on Render (if set) &mdash; a key saved here always takes priority.</div>
 <div class="ff" style="margin-bottom:6px">
 <div class="fl">Model</div>
 <select id="ais-model" class="fsel" ${isAdmin?'':'disabled'} onchange="tglAisCustom()">
@@ -1198,7 +1359,7 @@ ${(ais.model_choices||[]).map(m=>`<option value="${esc(m.id)}" ${m.id===ais.mode
 <div style="font-size:11px;margin-bottom:12px">${ais.has_api_key?'<span style="color:var(--green)">&#x2713; A key is configured</span>':'<span style="color:var(--amber)">&#x26A0; No key configured &mdash; AI analysis is disabled</span>'}</div>
 ${isAdmin?'<button class="btn btn-p" onclick="saveAiSettings()">Save AI Settings</button>':'<p style="font-size:12px;color:var(--muted)">Requires Admin role.</p>'}
 ${ais.updated_at?`<div style="font-size:11px;color:var(--muted);margin-top:8px">Last saved ${fmtAge(ais.updated_at)} by ${esc(ais.updated_by||'-')}</div>`:''}
-</div>
+</div>`:''}
 </div>`;
 }
 
@@ -1226,10 +1387,24 @@ function tglRpDest(){
   if(el)el.style.display=show?'flex':'none';
 }
 
+function settingsSiteQS(){
+  // Mirrors renderSettings' siteQS: only an oem_admin's explicit drill-down
+  // (_siteCtx) needs a ?site= param — a site-scoped admin's own writes are
+  // pinned to their own org by the backend regardless.
+  return _user?.role==='oem_admin' && _siteCtx ? `?site=${encodeURIComponent(_siteCtx)}` : '';
+}
+
 async function saveSets(){
   const body={org_name:document.getElementById('so')?.value?.trim(),offline_threshold_hours:parseInt(document.getElementById('soh')?.value)||1,offline_days_warning:parseInt(document.getElementById('sow')?.value)||7,mttd_target_minutes:parseInt(document.getElementById('sm')?.value)||30,mttr_target_minutes:parseInt(document.getElementById('smt')?.value)||120};
-  const r=await api('/api/settings',{method:'PUT',body:JSON.stringify(body)});
-  if(r.ok){document.getElementById('org-name').textContent=body.org_name||'SME Security';alert('Saved!');}
+  const r=await api('/api/settings'+settingsSiteQS(),{method:'PUT',body:JSON.stringify(body)});
+  if(r.ok){if(_user?.role!=='oem_admin'||!_siteCtx)document.getElementById('org-name').textContent=body.org_name||'SME Security';alert('Saved!');renderSettings(document.getElementById('content'));}
+  else{const d=await r.json().catch(()=>({detail:'Error'}));alert('Failed: '+d.detail);}
+}
+
+async function clearSets(){
+  if(!confirm('Revert to the OEM default for Dashboard Settings? This organization\'s own overrides will be discarded.'))return;
+  const r=await api('/api/settings'+settingsSiteQS(),{method:'DELETE'});
+  if(r.ok)renderSettings(document.getElementById('content'));
   else{const d=await r.json().catch(()=>({detail:'Error'}));alert('Failed: '+d.detail);}
 }
 
@@ -1245,8 +1420,15 @@ async function saveAgentSchedule(){
     reporter_interval_minutes:parseInt(gv('ag-rep-m'))||15,
     command_executor_enabled:gc('ag-cmd'),command_executor_interval_minutes:parseInt(gv('ag-cmd-m'))||5,
   };
-  const r=await api('/api/agent-schedule',{method:'PUT',body:JSON.stringify(body)});
+  const r=await api('/api/agent-schedule'+settingsSiteQS(),{method:'PUT',body:JSON.stringify(body)});
   if(r.ok){alert('Agent schedule saved! Endpoint agents will pick this up within one Command Executor cycle.');renderSettings(document.getElementById('content'));}
+  else{const d=await r.json().catch(()=>({detail:'Error'}));alert('Failed: '+d.detail);}
+}
+
+async function clearAgentSchedule(){
+  if(!confirm('Revert to the OEM default Agent Schedule? This organization\'s own overrides will be discarded.'))return;
+  const r=await api('/api/agent-schedule'+settingsSiteQS(),{method:'DELETE'});
+  if(r.ok)renderSettings(document.getElementById('content'));
   else{const d=await r.json().catch(()=>({detail:'Error'}));alert('Failed: '+d.detail);}
 }
 
@@ -1271,16 +1453,24 @@ async function saveRetention(){
       prefix:(gv('rp-dest-prefix')||'').trim()||'retained/',
     },
   };
-  const r=await api('/api/retention-policy',{method:'PUT',body:JSON.stringify(body)});
+  const r=await api('/api/retention-policy'+settingsSiteQS(),{method:'PUT',body:JSON.stringify(body)});
   if(r.ok){alert('Retention policy saved.');renderSettings(document.getElementById('content'));}
   else{const d=await r.json().catch(()=>({detail:'Error'}));alert('Failed: '+d.detail);}
 }
 
+async function clearRetention(){
+  if(!confirm('Revert to the OEM default Retention Policy? This organization\'s own overrides will be discarded.'))return;
+  const r=await api('/api/retention-policy'+settingsSiteQS(),{method:'DELETE'});
+  if(r.ok)renderSettings(document.getElementById('content'));
+  else{const d=await r.json().catch(()=>({detail:'Error'}));alert('Failed: '+d.detail);}
+}
+
 async function runRetentionNow(btn){
-  if(!confirm('Run the cloud-side retention sweep now? Depending on the saved policy this may permanently delete or move data. Continue?'))return;
+  const scopeMsg=_user?.role==='oem_admin'&&!_siteCtx?'every registered organization':(_siteCtx?`"${_siteCtx}"`:'your organization');
+  if(!confirm(`Run the cloud-side retention sweep now for ${scopeMsg}? Depending on the saved policy this may permanently delete or move data. Continue?`))return;
   btn.disabled=true;const orig=btn.textContent;btn.textContent='Running...';
   try{
-    const r=await api('/api/retention-policy/run-now',{method:'POST'});
+    const r=await api('/api/retention-policy/run-now'+settingsSiteQS(),{method:'POST'});
     const d=await r.json().catch(()=>({}));
     if(r.ok){alert('Sweep complete.');renderSettings(document.getElementById('content'));}
     else{alert('Failed: '+(d.detail||d.reason||r.status));btn.disabled=false;btn.textContent=orig;}

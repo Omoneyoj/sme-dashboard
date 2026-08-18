@@ -57,6 +57,7 @@ AGENT_SCHEDULE_KEY = "config/agent_schedule.json"
 RETENTION_POLICY_KEY   = "config/retention_policy.json"
 RETENTION_LAST_RUN_KEY = "config/retention_last_run.json"
 AI_SETTINGS_KEY = "config/ai_settings.json"
+ORGANIZATIONS_KEY = "config/organizations.json"
 
 # Model choices surfaced in the Settings UI dropdown. Anthropic's current
 # lineup as of this build — see https://docs.claude.com/en/docs/about-claude/models
@@ -237,10 +238,52 @@ def cache_bust(*keys):
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
 ROLE_PERMS = {
-    "reader":  {"read"},
-    "analyst": {"read", "alerts"},
-    "admin":   {"read", "alerts", "users", "apps", "commands", "settings"},
+    "reader":    {"read"},
+    "analyst":   {"read", "alerts"},
+    "admin":     {"read", "alerts", "users", "apps", "commands", "settings"},
+    # OEM-level superadmin: every permission an "admin" has, PLUS "orgs" —
+    # the ability to onboard/suspend organizations and create users (of any
+    # role, including other oem_admins) in any of them. The single
+    # structural difference from "admin" is site scope, not permissions:
+    # an oem_admin's site_name is None, which _scope_site()/_enforce_site()
+    # below treat as "no restriction" everywhere data or config is
+    # filtered by site. A site-scoped "admin" has every permission an
+    # oem_admin does EXCEPT "orgs", but every one of those permissions is
+    # still confined to their own site_name by the same two helpers.
+    "oem_admin": {"read", "alerts", "users", "apps", "commands", "settings", "orgs"},
 }
+# Roles that MUST belong to exactly one site (organization). oem_admin is
+# the only role with site_name == None, meaning "every site."
+SITE_SCOPED_ROLES = {"reader", "analyst", "admin"}
+
+
+def _scope_site(user: dict) -> Optional[str]:
+    """The single site_name a user's data/config access is confined to, or
+    None for an oem_admin (unrestricted — sees and manages every site).
+    This is the one function nearly every multi-tenant check in this file
+    ultimately calls."""
+    return None if user.get("role") == "oem_admin" else user.get("site_name")
+
+
+def _enforce_site(user: dict, site_name: Optional[str], what: str = "this resource"):
+    """Raises 403 if a site-scoped user is trying to touch a site that
+    isn't their own. oem_admin always passes. A scoped user with no
+    site_name at all (a misconfigured account) is denied by default —
+    fail closed, never fail open on a missing scope."""
+    scope = _scope_site(user)
+    if scope is None:
+        return
+    if not site_name or site_name != scope:
+        raise HTTPException(403, f"'{user['username']}' is restricted to site '{scope}' and cannot access {what} for '{site_name or '(unspecified)'}'")
+
+
+def _filter_by_site(user: dict, items: list, key: str = "site_name") -> list:
+    """Filters a list of dicts down to the caller's site; returns the list
+    unchanged for an oem_admin."""
+    scope = _scope_site(user)
+    if scope is None:
+        return items
+    return [i for i in items if i.get(key) == scope]
 
 
 def _hash_pw(password: str) -> str:
@@ -270,9 +313,9 @@ def _get_secret() -> str:
     return sec
 
 
-def _make_token(username: str, role: str) -> str:
+def _make_token(username: str, role: str, site_name: Optional[str]) -> str:
     ts = str(int(time.time()))
-    payload = f"{username}:{role}:{ts}"
+    payload = f"{username}:{role}:{site_name or ''}:{ts}"
     sig = _hmac.new(_get_secret().encode(), payload.encode(), hashlib.sha256).hexdigest()
     return base64.b64encode(f"{payload}:{sig}".encode()).decode()
 
@@ -284,10 +327,11 @@ def _verify_token(token: str) -> Optional[dict]:
         expected = _hmac.new(_get_secret().encode(), payload.encode(), hashlib.sha256).hexdigest()
         if not _hmac.compare_digest(sig, expected):
             return None
-        username, role, ts = payload.split(":")
+        username, role, site_name, ts = payload.split(":")
         if int(time.time()) - int(ts) > TOKEN_EXPIRY:
             return None
-        return {"username": username, "role": role, "perms": list(ROLE_PERMS.get(role, set()))}
+        return {"username": username, "role": role, "site_name": site_name or None,
+                "perms": list(ROLE_PERMS.get(role, set()))}
     except Exception:
         return None
 
@@ -298,10 +342,12 @@ def _load_users() -> list:
         return []
     data = s3_get(client, AUTH_USERS_KEY) or {}
     users = data.get("users", [])
-    # Bootstrap: create default admin if no users exist
+    # Bootstrap: create the default OEM superadmin if no users exist yet.
+    # site_name is intentionally None — this is the OEM's own account, not
+    # tied to any one customer organization.
     if not users:
         default_pw = DASHBOARD_ADMIN_KEY or "Admin@1234!"
-        users = [{"username": "admin", "role": "admin",
+        users = [{"username": "admin", "role": "oem_admin", "site_name": None,
                    "password_hash": _hash_pw(default_pw),
                    "email": "", "created_at": datetime.datetime.utcnow().isoformat()}]
         s3_put(client, AUTH_USERS_KEY, {"users": users})
@@ -312,6 +358,26 @@ def _save_users(users: list):
     client = s3(commander=True)
     if client:
         s3_put(client, AUTH_USERS_KEY, {"users": users})
+
+
+SITE_SLUG_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{1,63}$")
+
+
+def _load_orgs() -> list:
+    client = s3()
+    if not client:
+        return []
+    return (s3_get(client, ORGANIZATIONS_KEY) or {}).get("organizations", [])
+
+
+def _save_orgs(orgs: list):
+    client = s3(commander=True)
+    if client:
+        s3_put(client, ORGANIZATIONS_KEY, {"organizations": orgs})
+
+
+def _find_org(site_name: str) -> Optional[dict]:
+    return next((o for o in _load_orgs() if o["site_name"] == site_name), None)
 
 
 async def get_user(request: Request) -> Optional[dict]:
@@ -748,24 +814,53 @@ def fetch_device_detail(site_name: str, hostname: str) -> dict:
     return {"device": device, "modules": modules, "apps": apps, "timeline": timeline, "alerts": alerts}
 
 
-def _get_settings() -> dict:
-    client = s3()
-    return (s3_get(client, SETTINGS_KEY) or {}) if client else {}
+def _site_override_key(base_key: str, site_name: str) -> str:
+    """Given an OEM-global config key like 'config/agent_schedule.json',
+    returns the per-site override key 'config/agent_schedule/sites/{site}.json'.
+    Used consistently by settings/agent-schedule/retention-policy so a
+    site's override always lives right alongside its global default."""
+    stem = base_key[:-5] if base_key.endswith(".json") else base_key
+    return f"{stem}/sites/{site_name}.json"
 
 
-def _get_agent_schedule() -> dict:
-    """Merges DEFAULT_AGENT_SCHEDULE with whatever the dashboard has saved
-    to Oracle, so the response always contains every known key even before
-    the dashboard has ever written an override. Endpoint agents read the
-    raw Oracle object directly (see agent.py fetch_remote_schedule) rather
-    than calling this API, so it stays available even if Render is asleep;
-    this function only backs the dashboard UI's own view/edit of it."""
+def _get_settings(site_name: Optional[str] = None) -> dict:
+    """OEM-global dashboard settings (org_name/offline thresholds/MTTD-MTTR
+    targets), with an optional per-site override layered on top. Every
+    field an org's admin hasn't explicitly overridden falls back to the
+    OEM default, so a brand-new organization is fully configured from
+    the moment it's onboarded."""
     client = s3()
-    stored = (s3_get(client, AGENT_SCHEDULE_KEY) or {}) if client else {}
+    global_doc = (s3_get(client, SETTINGS_KEY) or {}) if client else {}
+    merged = dict(global_doc)
+    site_doc = {}
+    if site_name and client:
+        site_doc = s3_get(client, _site_override_key(SETTINGS_KEY, site_name)) or {}
+        merged.update(site_doc)
+    merged["is_site_override"] = bool(site_doc)
+    return merged
+
+
+def _get_agent_schedule(site_name: Optional[str] = None) -> dict:
+    """Merges DEFAULT_AGENT_SCHEDULE with the OEM-global doc, then — if
+    site_name is given — that site's own override doc on top of that, so
+    the response always contains every known key even before anyone has
+    saved anything. Endpoint agents read the raw Oracle objects directly
+    (global always, plus their own site's override — see agent.py
+    fetch_remote_schedule/fetch_remote_site_schedule) rather than calling
+    this API, so it stays available even if Render is asleep; this
+    function only backs the dashboard UI's own view/edit of it."""
+    client = s3()
+    global_doc = (s3_get(client, AGENT_SCHEDULE_KEY) or {}) if client else {}
     merged = dict(DEFAULT_AGENT_SCHEDULE)
-    merged.update({k: v for k, v in stored.items() if k in DEFAULT_AGENT_SCHEDULE})
-    merged["updated_at"] = stored.get("updated_at")
-    merged["updated_by"] = stored.get("updated_by")
+    merged.update({k: v for k, v in global_doc.items() if k in DEFAULT_AGENT_SCHEDULE})
+    site_doc = {}
+    if site_name and client:
+        site_doc = s3_get(client, _site_override_key(AGENT_SCHEDULE_KEY, site_name)) or {}
+        merged.update({k: v for k, v in site_doc.items() if k in DEFAULT_AGENT_SCHEDULE})
+    src = site_doc or global_doc
+    merged["updated_at"] = src.get("updated_at")
+    merged["updated_by"] = src.get("updated_by")
+    merged["is_site_override"] = bool(site_doc)
     return merged
 
 
@@ -799,24 +894,38 @@ def _resolve_ai_config() -> tuple:
     return model, api_key
 
 
-def _get_retention_policy(redact: bool = True) -> dict:
-    """Merges DEFAULT_RETENTION_POLICY with whatever's saved to Oracle.
-    With redact=True (the GET-endpoint default) the destination secret key
-    is stripped and replaced with a has_secret flag so it's never sent back
-    to the browser after being saved; internal callers (the sweep itself,
-    PUT's merge-before-save) use redact=False to get the real value."""
-    client = s3()
-    stored = (s3_get(client, RETENTION_POLICY_KEY) or {}) if client else {}
-    merged = json.loads(json.dumps(DEFAULT_RETENTION_POLICY))  # deep copy
-    for k, v in stored.items():
+def _merge_retention_doc(merged: dict, doc: dict):
+    """Applies one retention-policy JSON doc (global or site override) onto
+    an in-progress merged dict, in place — shared by both layers so
+    _get_retention_policy's global-then-site pass uses identical logic."""
+    for k, v in doc.items():
         if k == "targets" and isinstance(v, dict):
             merged["targets"].update({tk: bool(tv) for tk, tv in v.items() if tk in merged["targets"]})
         elif k == "move_destination" and isinstance(v, dict):
             merged["move_destination"].update({dk: dv for dk, dv in v.items() if dk in merged["move_destination"]})
         elif k in merged:
             merged[k] = v
-    merged["updated_at"] = stored.get("updated_at")
-    merged["updated_by"] = stored.get("updated_by")
+
+
+def _get_retention_policy(redact: bool = True, site_name: Optional[str] = None) -> dict:
+    """Merges DEFAULT_RETENTION_POLICY with the OEM-global doc, then — if
+    site_name is given — that site's own override doc on top. With
+    redact=True (the GET-endpoint default) the destination secret key is
+    stripped and replaced with a has_secret flag so it's never sent back
+    to the browser after being saved; internal callers (the sweep itself,
+    PUT's merge-before-save) use redact=False to get the real value."""
+    client = s3()
+    global_doc = (s3_get(client, RETENTION_POLICY_KEY) or {}) if client else {}
+    merged = json.loads(json.dumps(DEFAULT_RETENTION_POLICY))  # deep copy
+    _merge_retention_doc(merged, global_doc)
+    site_doc = {}
+    if site_name and client:
+        site_doc = s3_get(client, _site_override_key(RETENTION_POLICY_KEY, site_name)) or {}
+        _merge_retention_doc(merged, site_doc)
+    src = site_doc or global_doc
+    merged["updated_at"] = src.get("updated_at")
+    merged["updated_by"] = src.get("updated_by")
+    merged["is_site_override"] = bool(site_doc)
     if redact:
         has_secret = bool(merged["move_destination"].get("secret_key"))
         merged["move_destination"]["secret_key"] = ""
@@ -824,9 +933,13 @@ def _get_retention_policy(redact: bool = True) -> dict:
     return merged
 
 
-def _get_retention_last_run() -> Optional[dict]:
+def _get_retention_last_run(site_name: Optional[str] = None) -> Optional[dict]:
     client = s3()
-    return s3_get(client, RETENTION_LAST_RUN_KEY) if client else None
+    if not client:
+        return None
+    if site_name:
+        return s3_get(client, _site_override_key(RETENTION_LAST_RUN_KEY, site_name))
+    return s3_get(client, RETENTION_LAST_RUN_KEY)
 
 
 def _s3_client_for(dest: dict):
@@ -901,14 +1014,16 @@ def _sweep_prefix(client, dest_client, dest_cfg: dict, prefix: str, cutoff, size
             stat["errors"] += 1
 
 
-def _sweep_alerts(client, dest_client, dest_cfg: dict, cutoff, size_budget, move: bool, stat: dict, cap: int = 500):
+def _sweep_alerts(client, dest_client, dest_cfg: dict, alerts_prefix: str, cutoff, size_budget,
+                   move: bool, stat: dict, cap: int = 500):
     """Same eligibility logic as _sweep_prefix, but every candidate is
     fetched and MUST have status=='Closed' before it's touched — New/Open
     alerts are never deleted or moved by retention, regardless of age or
     size pressure. Capped lower than _sweep_prefix (500 vs 2000) because,
     unlike report objects, checking status requires an extra GET per
-    candidate."""
-    objs = list_prefix(client, ALERTS_PREFIX)
+    candidate. alerts_prefix is ALERTS_PREFIX for an unscoped/legacy sweep,
+    or 'alerts/{site_name}/' to sweep one organization only."""
+    objs = list_prefix(client, alerts_prefix)
     stat["scanned"] = len(objs)
     candidates = _retention_eligible(objs, cutoff, size_budget)[:cap]
     dest_bucket = dest_cfg.get("bucket") if dest_cfg else None
@@ -938,19 +1053,13 @@ def _sweep_alerts(client, dest_client, dest_cfg: dict, cutoff, size_budget, move
     cache_bust("alerts")
 
 
-def run_retention_sweep(trigger: str = "manual") -> dict:
-    """Cloud-side half of the retention policy. Runs synchronously (callers
-    dispatch it to a thread pool executor so it never blocks the event
-    loop — see /api/retention-policy/run-now and _maybe_kick_retention_sweep).
-    The endpoint-side half (log rotation, quarantine pruning) is applied
-    independently by each agent — see agent.py apply_endpoint_retention()."""
-    policy = _get_retention_policy(redact=False)
+def _sweep_one_site(client, policy: dict, site_name: Optional[str]) -> dict:
+    """Runs the cloud sweep for a single site's (or, if site_name is None,
+    the flat legacy/unscoped) archive+alerts data using that layer's
+    effective policy. Returns the summary dict; does NOT persist it —
+    callers decide where (global key, per-site key, or both)."""
     if not policy.get("enabled"):
-        return {"status": "skipped", "reason": "disabled", "trigger": trigger}
-    client = s3(commander=True)
-    if not client:
-        return {"status": "error", "reason": "Commander not configured", "trigger": trigger}
-
+        return {"status": "skipped", "reason": "disabled"}
     targets = policy.get("targets", {})
     age_days = policy.get("age_days") or None
     max_size_gb = policy.get("max_size_gb") or None
@@ -961,23 +1070,64 @@ def run_retention_sweep(trigger: str = "manual") -> dict:
     dest_cfg = policy.get("move_destination") or {}
     dest_client = _s3_client_for(dest_cfg) if move else None
     if move and not dest_client:
-        return {"status": "error", "reason": "Move action selected but move_destination is not fully configured", "trigger": trigger}
+        return {"status": "error", "reason": "Move action selected but move_destination is not fully configured"}
 
-    summary = {}
+    archive_prefix = f"archive/{site_name}/" if site_name else "archive/"
+    alerts_prefix  = f"{ALERTS_PREFIX}{site_name}/" if site_name else ALERTS_PREFIX
+
+    summary = {"status": "completed"}
     if not policy.get("delete_from_cloud", True):
         summary["cloud"] = {"status": "skipped", "reason": "delete_from_cloud is off"}
-    else:
-        if targets.get("cloud_reports"):
-            stat = {"scanned": 0, "matched": 0, "deleted": 0, "moved": 0, "errors": 0, "bytes_freed": 0}
-            _sweep_prefix(client, dest_client, dest_cfg, "archive/", cutoff, size_budget, move, stat)
-            summary["cloud_reports"] = stat
-        if targets.get("cloud_alerts"):
-            stat = {"scanned": 0, "matched": 0, "deleted": 0, "moved": 0, "errors": 0, "bytes_freed": 0}
-            _sweep_alerts(client, dest_client, dest_cfg, cutoff, size_budget, move, stat)
-            summary["cloud_alerts"] = stat
+        return summary
+    if targets.get("cloud_reports"):
+        stat = {"scanned": 0, "matched": 0, "deleted": 0, "moved": 0, "errors": 0, "bytes_freed": 0}
+        _sweep_prefix(client, dest_client, dest_cfg, archive_prefix, cutoff, size_budget, move, stat)
+        summary["cloud_reports"] = stat
+    if targets.get("cloud_alerts"):
+        stat = {"scanned": 0, "matched": 0, "deleted": 0, "moved": 0, "errors": 0, "bytes_freed": 0}
+        _sweep_alerts(client, dest_client, dest_cfg, alerts_prefix, cutoff, size_budget, move, stat)
+        summary["cloud_alerts"] = stat
+    return summary
 
-    result = {"status": "completed", "trigger": trigger,
-              "ran_at": datetime.datetime.utcnow().isoformat(), "summary": summary}
+
+def run_retention_sweep(trigger: str = "manual", site_name: Optional[str] = None) -> dict:
+    """Cloud-side half of the retention policy. Runs synchronously (callers
+    dispatch it to a thread pool executor so it never blocks the event
+    loop — see /api/retention-policy/run-now and _maybe_kick_retention_sweep).
+    The endpoint-side half (log rotation, quarantine pruning) is applied
+    independently by each agent — see agent.py apply_endpoint_retention().
+
+    site_name=None sweeps EVERY registered organization, each using its
+    own effective (OEM-global + site-override) policy — this is what the
+    opportunistic auto-trigger and an OEM admin's unscoped 'Run Now' do.
+    A specific site_name sweeps only that organization, using its
+    effective policy — what a site-admin's 'Run Now' (always scoped to
+    their own site) does. If no organizations are registered at all, this
+    falls back to one flat, unscoped sweep against the OEM-global policy
+    for backward compatibility with simpler single-tenant deployments."""
+    client = s3(commander=True)
+    if not client:
+        return {"status": "error", "reason": "Commander not configured", "trigger": trigger}
+
+    ran_at = datetime.datetime.utcnow().isoformat()
+    if site_name:
+        sites = [site_name]
+    else:
+        sites = [o["site_name"] for o in _load_orgs()]
+
+    per_site = {}
+    if not sites:
+        policy = _get_retention_policy(redact=False)
+        per_site["_unscoped"] = _sweep_one_site(client, policy, None)
+    else:
+        for s in sites:
+            policy = _get_retention_policy(redact=False, site_name=s)
+            per_site[s] = _sweep_one_site(client, policy, s)
+            s3_put(client, _site_override_key(RETENTION_LAST_RUN_KEY, s),
+                   {"trigger": trigger, "ran_at": ran_at, "summary": per_site[s]})
+
+    result = {"status": "completed", "trigger": trigger, "ran_at": ran_at,
+              "sites_swept": sites or ["_unscoped"], "summary": per_site}
     s3_put(client, RETENTION_LAST_RUN_KEY, result)
     return result
 
@@ -986,12 +1136,17 @@ async def _maybe_kick_retention_sweep():
     """Opportunistic auto-trigger: since Render's free tier has no
     always-on cron/worker, this checks (cheaply, off the request's Oracle
     reads that already happen) whether it's been >= sweep_interval_hours
-    since the last recorded sweep, and if so runs one in a thread pool
-    executor without blocking the caller. Called fire-and-forget from
-    GET /api/overview — the most-visited page — so retention still runs
-    on roughly the right cadence even with zero dedicated infrastructure.
-    Guarded by an in-memory flag so concurrent requests can't pile up
-    duplicate sweeps."""
+    since the last recorded sweep, and if so runs one (across every
+    registered organization, each with its own effective policy) in a
+    thread pool executor without blocking the caller. Called
+    fire-and-forget from GET /api/overview — the most-visited page — so
+    retention still runs on roughly the right cadence even with zero
+    dedicated infrastructure. Uses the OEM-global policy's
+    sweep_interval_hours/enabled as the master switch/cadence; a site with
+    its own override can still tighten (or disable) retention for just
+    itself, but can't override the OEM's decision to run sweeps at all —
+    that's an OEM ops concern, not a per-site one, so a site can't silently
+    stop everyone else's sweep from ever running."""
     global _retention_sweep_running
     if _retention_sweep_running:
         return
@@ -1006,7 +1161,7 @@ async def _maybe_kick_retention_sweep():
     _retention_sweep_running = True
     try:
         loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, run_retention_sweep, "auto")
+        await loop.run_in_executor(None, run_retention_sweep, "auto", None)
     except Exception:
         pass
     finally:
@@ -1078,12 +1233,18 @@ async def login(request: Request):
     user = next((u for u in users if u["username"].lower() == username), None)
     if not user or not _check_pw(password, user.get("password_hash", "")):
         raise HTTPException(401, "Invalid credentials")
-    token = _make_token(user["username"], user["role"])
+    site_name = user.get("site_name")
+    if site_name:
+        org = _find_org(site_name)
+        if org and org.get("status") == "suspended":
+            raise HTTPException(403, f"Organization '{org.get('display_name', site_name)}' is suspended. Contact your provider.")
+    token = _make_token(user["username"], user["role"], site_name)
     return JSONResponse({
-        "token":    token,
-        "username": user["username"],
-        "role":     user["role"],
-        "perms":    list(ROLE_PERMS.get(user["role"], set())),
+        "token":     token,
+        "username":  user["username"],
+        "role":      user["role"],
+        "site_name": site_name,
+        "perms":     list(ROLE_PERMS.get(user["role"], set())),
     })
 
 
@@ -1092,12 +1253,16 @@ async def get_me(request: Request):
     user = await get_user(request)
     if not user:
         raise HTTPException(401, "Not authenticated")
-    return JSONResponse(user)
+    out = dict(user)
+    if user.get("site_name"):
+        org = _find_org(user["site_name"])
+        out["org_display_name"] = org.get("display_name") if org else user["site_name"]
+    return JSONResponse(out)
 
 
 @app.get("/api/users")
 async def list_users(user=Depends(require_perm("users"))):
-    users = _load_users()
+    users = _filter_by_site(user, _load_users())
     return JSONResponse({"users": [
         {k: v for k, v in u.items() if k != "password_hash"}
         for u in users
@@ -1115,11 +1280,30 @@ async def create_user(request: Request, user=Depends(require_perm("users"))):
         raise HTTPException(400, "Username and password required")
     if role not in ROLE_PERMS:
         raise HTTPException(400, f"Invalid role. Must be one of: {list(ROLE_PERMS)}")
+
+    caller_scope = _scope_site(user)
+    if caller_scope is not None:
+        # Site-scoped admin: can only create users IN their own site, and
+        # can never grant oem_admin (that would be a privilege escalation
+        # out of their own org entirely).
+        if role == "oem_admin":
+            raise HTTPException(403, "Only an OEM admin can create another OEM admin")
+        site_name = caller_scope
+    else:
+        # oem_admin: site_name required for every role except oem_admin
+        # itself; must be a real, registered organization.
+        site_name = None if role == "oem_admin" else (body.get("site_name") or "").strip()
+        if role != "oem_admin":
+            if not site_name:
+                raise HTTPException(400, "site_name is required for non-OEM-admin users")
+            if not _find_org(site_name):
+                raise HTTPException(400, f"'{site_name}' is not a registered organization — onboard it first")
+
     users = _load_users()
     if any(u["username"].lower() == username for u in users):
         raise HTTPException(409, f"User '{username}' already exists")
     new_user = {
-        "username":      username, "role": role, "email": email,
+        "username":      username, "role": role, "site_name": site_name, "email": email,
         "password_hash": _hash_pw(password),
         "created_at":    datetime.datetime.utcnow().isoformat(),
         "created_by":    user["username"],
@@ -1137,10 +1321,21 @@ async def update_user(username: str, request: Request, user=Depends(require_perm
     target = next((u for u in users if u["username"].lower() == username.lower()), None)
     if not target:
         raise HTTPException(404, f"User '{username}' not found")
+    _enforce_site(user, target.get("site_name"), what=f"user '{username}'")
+    caller_scope = _scope_site(user)
     if "role" in body:
         if body["role"] not in ROLE_PERMS:
             raise HTTPException(400, f"Invalid role")
+        if caller_scope is not None and body["role"] == "oem_admin":
+            raise HTTPException(403, "Only an OEM admin can grant the OEM admin role")
         target["role"] = body["role"]
+    if "site_name" in body and caller_scope is not None:
+        raise HTTPException(403, "Site-scoped admins cannot move a user to a different organization")
+    elif "site_name" in body:
+        new_site = (body["site_name"] or "").strip() or None
+        if new_site and not _find_org(new_site):
+            raise HTTPException(400, f"'{new_site}' is not a registered organization")
+        target["site_name"] = new_site
     if "email" in body:
         target["email"] = body["email"]
     if "password" in body and body["password"]:
@@ -1155,12 +1350,87 @@ async def delete_user(username: str, user=Depends(require_perm("users"))):
     if username.lower() == user["username"].lower():
         raise HTTPException(400, "Cannot delete your own account")
     users = _load_users()
-    before = len(users)
-    users  = [u for u in users if u["username"].lower() != username.lower()]
-    if len(users) == before:
+    target = next((u for u in users if u["username"].lower() == username.lower()), None)
+    if not target:
         raise HTTPException(404, f"User '{username}' not found")
+    _enforce_site(user, target.get("site_name"), what=f"user '{username}'")
+    users = [u for u in users if u["username"].lower() != username.lower()]
     _save_users(users)
     return JSONResponse({"status": "deleted", "username": username})
+
+
+# ── Organizations (OEM-only: onboarding/offboarding customer sites) ───────────
+@app.get("/api/organizations")
+async def list_organizations(user=Depends(require_perm("orgs"))):
+    orgs = _load_orgs()
+    devices = fetch_inventory()
+    users = _load_users()
+    for o in orgs:
+        o["device_count"] = sum(1 for d in devices if d.get("site_name") == o["site_name"])
+        o["user_count"]   = sum(1 for u in users if u.get("site_name") == o["site_name"])
+    return JSONResponse({"organizations": orgs})
+
+
+@app.post("/api/organizations")
+async def create_organization(request: Request, user=Depends(require_perm("orgs"))):
+    """Onboards a new customer organization: registers the site_name and,
+    optionally, creates its first site-admin user in the same call so an
+    OEM admin can hand over working credentials immediately."""
+    body = await request.json()
+    site_name = (body.get("site_name") or "").strip()
+    display_name = (body.get("display_name") or "").strip() or site_name
+    if not site_name or not SITE_SLUG_RE.match(site_name):
+        raise HTTPException(400, "site_name must be 2-64 characters: letters, numbers, '-' or '_' only "
+                                  "(this becomes part of the Oracle key prefix for this org's data)")
+    orgs = _load_orgs()
+    if any(o["site_name"] == site_name for o in orgs):
+        raise HTTPException(409, f"Organization '{site_name}' already exists")
+    org = {
+        "site_name": site_name, "display_name": display_name, "status": "active",
+        "created_at": datetime.datetime.utcnow().isoformat(), "created_by": user["username"],
+    }
+    orgs.append(org)
+    _save_orgs(orgs)
+
+    admin_user = None
+    admin_username = (body.get("admin_username") or "").strip().lower()
+    admin_password = body.get("admin_password") or ""
+    if admin_username and admin_password:
+        users = _load_users()
+        if any(u["username"].lower() == admin_username for u in users):
+            raise HTTPException(409, f"Organization created, but user '{admin_username}' already exists — "
+                                      f"add an admin for it separately from Users")
+        admin_user = {
+            "username": admin_username, "role": "admin", "site_name": site_name,
+            "email": (body.get("admin_email") or "").strip(),
+            "password_hash": _hash_pw(admin_password),
+            "created_at": datetime.datetime.utcnow().isoformat(), "created_by": user["username"],
+        }
+        users.append(admin_user)
+        _save_users(users)
+
+    return JSONResponse({
+        "organization": org,
+        "admin_user": ({k: v for k, v in admin_user.items() if k != "password_hash"} if admin_user else None),
+    }, status_code=201)
+
+
+@app.put("/api/organizations/{site_name}")
+async def update_organization(site_name: str, request: Request, user=Depends(require_perm("orgs"))):
+    body = await request.json()
+    orgs = _load_orgs()
+    org = next((o for o in orgs if o["site_name"] == site_name), None)
+    if not org:
+        raise HTTPException(404, f"Organization '{site_name}' not found")
+    if "display_name" in body:
+        org["display_name"] = (body["display_name"] or "").strip() or site_name
+    if "status" in body:
+        if body["status"] not in ("active", "suspended"):
+            raise HTTPException(400, "status must be 'active' or 'suspended'")
+        org["status"] = body["status"]
+    org["updated_at"] = datetime.datetime.utcnow().isoformat()
+    _save_orgs(orgs)
+    return JSONResponse(org)
 
 
 # ── Data endpoints ────────────────────────────────────────────────────────────
@@ -1177,7 +1447,7 @@ async def get_inventory(request: Request):
     user = await get_user(request)
     if not user:
         raise HTTPException(401, "Authentication required")
-    return JSONResponse({"devices": fetch_inventory()})
+    return JSONResponse({"devices": _filter_by_site(user, fetch_inventory())})
 
 
 @app.get("/api/device/{site_name}/{hostname}")
@@ -1185,6 +1455,7 @@ async def get_device(site_name: str, hostname: str, request: Request):
     user = await get_user(request)
     if not user:
         raise HTTPException(401, "Authentication required")
+    _enforce_site(user, site_name, what="this device")
     return JSONResponse(fetch_device_detail(site_name, hostname))
 
 
@@ -1193,11 +1464,20 @@ async def get_timeline(site_name: str, hostname: str, request: Request, pid: Opt
     user = await get_user(request)
     if not user:
         raise HTTPException(401, "Authentication required")
+    _enforce_site(user, site_name, what="this device")
     detail = fetch_device_detail(site_name, hostname)
     events = detail.get("timeline", [])
     if pid:
         events = [e for e in events if e.get("pid") == pid]
     return JSONResponse({"hostname": hostname, "events": events})
+
+
+def _alerts_prefix_for(user: dict) -> str:
+    """ALERTS_PREFIX narrowed to the caller's site, so any endpoint that
+    scans it (update/bulk-update below) can never even list — let alone
+    read or write — another organization's alert objects."""
+    scope = _scope_site(user)
+    return f"{ALERTS_PREFIX}{scope}/" if scope else ALERTS_PREFIX
 
 
 # ── Alerts ────────────────────────────────────────────────────────────────────
@@ -1210,11 +1490,16 @@ async def get_all_alerts(request: Request, status: Optional[str] = None,
     if not user:
         raise HTTPException(401, "Authentication required")
 
-    alerts = fetch_all_alerts()
+    alerts = _filter_by_site(user, fetch_all_alerts())
     write_client = s3(commander=True)
     existing_ids = {a["id"] for a in alerts}
 
-    for m in fetch_status():
+    # Only scan THIS user's own site(s) for not-yet-persisted alerts — an
+    # oem_admin's page load shouldn't be the trigger that creates (and
+    # background-AI-analyzes) alerts for every customer site at once, and
+    # a site-scoped user should never cause writes for a site they can't
+    # even see.
+    for m in _filter_by_site(user, fetch_status()):
         for raw_alert in m.get("alerts", []):
             src  = raw_alert.get("source", "unknown")
             ts   = raw_alert.get("detected_at") or raw_alert.get("time") or ""
@@ -1244,12 +1529,11 @@ async def get_all_alerts(request: Request, status: Optional[str] = None,
             alerts.append(new_alert)
             existing_ids.add(aid)
             cache_bust("alerts")
-            # Layer 2 (optional): if Claude is configured, generate a
-            # richer analysis in the background and persist it onto the
-            # alert once — never blocks this request, and every future
-            # viewer sees the same persisted result instead of each
-            # re-triggering (and re-paying for) their own API call.
-            if ANTHROPIC_API_KEY:
+            # Layer 2 (optional): if a key is configured (Settings or env
+            # var), generate a richer analysis in the background and
+            # persist it onto the alert once — never blocks this request.
+            _, resolved_key = _resolve_ai_config()
+            if resolved_key:
                 asyncio.create_task(_auto_generate_ai_analysis(dict(new_alert)))
 
     if status:
@@ -1274,7 +1558,7 @@ async def update_alert(alert_id: str, request: Request,
     client = s3(commander=True)
     if not client:
         raise HTTPException(503, "Commander not configured")
-    for obj in list_prefix(client, ALERTS_PREFIX):
+    for obj in list_prefix(client, _alerts_prefix_for(user)):
         if obj["Key"].endswith(f"/{alert_id}.json"):
             alert = json.loads(client.get_object(Bucket=ORACLE_BUCKET, Key=obj["Key"])["Body"].read())
             for k in {"status", "notes", "assigned_to"}:
@@ -1303,7 +1587,7 @@ async def bulk_update_alerts(request: Request, user=Depends(require_perm("alerts
 
     updated = []
     id_set = set(alert_ids)
-    for obj in list_prefix(client, ALERTS_PREFIX):
+    for obj in list_prefix(client, _alerts_prefix_for(user)):
         # Extract alert ID from key: alerts/{site}/{host}/{id}.json
         key_parts = obj["Key"].split("/")
         alert_id  = key_parts[-1].replace(".json", "") if key_parts else ""
@@ -1469,6 +1753,7 @@ async def get_alert_context(alert_id: str, request: Request,
     alert, site_name, hostname = _find_alert(alert_id, site_name, hostname)
     if alert is None:
         raise HTTPException(404, f"Alert {alert_id} not found")
+    _enforce_site(user, alert.get("site_name") or site_name, what="this alert")
     ctx = _alert_investigation_context(alert, site_name, hostname, window_minutes)
     return JSONResponse({"alert": alert, **ctx})
 
@@ -1486,7 +1771,7 @@ async def get_global_app_inventory(request: Request, risk: Optional[str] = None,
     policies = _get_app_policies()
     all_apps = []
     seen     = set()
-    for m in fetch_status():
+    for m in _filter_by_site(user, fetch_status()):
         detail = fetch_device_detail(m["site_name"], m["hostname"])
         for app in detail.get("apps", []):
             name = (app.get("name") or "").lower()
@@ -1515,7 +1800,15 @@ async def get_global_app_inventory(request: Request, risk: Optional[str] = None,
 
 @app.post("/api/apps/sanction")
 async def sanction_app(request: Request, user=Depends(require_perm("apps"))):
-    """Mark an app as sanctioned or unsanctioned (globally)."""
+    """Mark an app as sanctioned or unsanctioned. This is intentionally
+    OEM-only: app_policies.json is a single flat, un-site-keyed doc (an
+    app is sanctioned or it isn't, platform-wide), so letting a site-admin
+    change it would silently change every OTHER organization's view of
+    that app too. If per-site app policy is ever needed, this needs the
+    same OEM-global+site-override layering as Settings/Schedule/Retention
+    first — until then, only an oem_admin can call this."""
+    if _scope_site(user) is not None:
+        raise HTTPException(403, "Only an OEM admin can change app sanctioning (it applies platform-wide)")
     body      = await request.json()
     app_name  = (body.get("app_name") or "").lower().strip()
     sanctioned= body.get("sanctioned", True)
@@ -1559,6 +1852,7 @@ async def uninstall_app(request: Request, user=Depends(require_perm("apps"))):
     app_name = body.get("app_name")
     if not all([site, hostname, app_name]):
         raise HTTPException(400, "site_name, hostname, app_name required")
+    _enforce_site(user, site, what="this device")
     client = s3(commander=True)
     if not client:
         raise HTTPException(503, "Commander not configured")
@@ -1582,13 +1876,15 @@ async def uninstall_apps_bulk(request: Request, user=Depends(require_perm("apps"
     risk     = body.get("risk_level")
     if not app_names and not risk:
         raise HTTPException(400, "Provide app_names or risk_level filter")
+    if site:
+        _enforce_site(user, site, what="this site")
     client = s3(commander=True)
     if not client:
         raise HTTPException(503, "Commander not configured")
-    queued = []
-    devices = [d for d in fetch_inventory()
+    devices = [d for d in _filter_by_site(user, fetch_inventory())
                if (not site or d["site_name"] == site)
                and (not hostname or d["hostname"] == hostname)]
+    queued = []
     for device in devices:
         detail = fetch_device_detail(device["site_name"], device["hostname"])
         for app in detail.get("apps", []):
@@ -1718,6 +2014,7 @@ async def ai_analyze_alert(request: Request, user=Depends(require_perm("alerts")
     alert, site_name, hostname = _find_alert(alert_id, body.get("site_name"), body.get("hostname"))
     if alert is None:
         raise HTTPException(404, f"Alert {alert_id} not found")
+    _enforce_site(user, alert.get("site_name") or site_name, what="this alert")
     ctx = _alert_investigation_context(alert, site_name, hostname)
     try:
         loop = asyncio.get_event_loop()
@@ -1799,12 +2096,29 @@ async def set_machine_enforcement(site_name: str, hostname: str, request: Reques
     return JSONResponse({"status": "ok", "scope": "machine", "hostname": hostname})
 
 
+def _enforce_rules_scope(user: dict, scope: str, site: Optional[str], write: bool = False):
+    """Global rules are OEM policy — only an oem_admin may create/edit/
+    delete them (read is fine for everyone, so site-admins can see what
+    baseline applies to them). Site/machine-scoped rules are restricted to
+    the caller's own site, exactly like every other layered config."""
+    caller_scope = _scope_site(user)
+    if caller_scope is None:
+        return
+    if scope == "global":
+        if write:
+            raise HTTPException(403, "Only an OEM admin can modify global detection rules")
+        return
+    if site != caller_scope:
+        raise HTTPException(403, f"'{user['username']}' is restricted to site '{caller_scope}'")
+
+
 @app.get("/api/rules")
 async def get_rules(request: Request, scope: str = "global",
                      site: Optional[str] = None, hostname: Optional[str] = None):
     user = await get_user(request)
     if not user:
         raise HTTPException(401, "Authentication required")
+    _enforce_rules_scope(user, scope, site, write=False)
     client = s3()
     if not client:
         return JSONResponse({"rules": [], "scope": scope})
@@ -1849,6 +2163,7 @@ def _save_rules(client, rules, scope, site=None, hostname=None):
 async def create_rule(request: Request, user=Depends(require_perm("commands")),
                        scope: str = "global", site: Optional[str] = None,
                        hostname: Optional[str] = None):
+    _enforce_rules_scope(user, scope, site, write=True)
     body = await request.json()
     bad  = [a for a in body.get("actions", []) if a not in ALLOWED_ACTIONS]
     if bad:
@@ -1886,6 +2201,7 @@ async def update_rule(rule_id: str, request: Request,
                        user=Depends(require_perm("commands")),
                        scope: str = "global", site: Optional[str] = None,
                        hostname: Optional[str] = None):
+    _enforce_rules_scope(user, scope, site, write=True)
     body = await request.json()
     client = s3(commander=True)
     if not client:
@@ -1916,6 +2232,7 @@ async def update_rule(rule_id: str, request: Request,
 async def delete_rule(rule_id: str, user=Depends(require_perm("commands")),
                        scope: str = "global", site: Optional[str] = None,
                        hostname: Optional[str] = None):
+    _enforce_rules_scope(user, scope, site, write=True)
     client = s3(commander=True)
     if not client:
         raise HTTPException(503, "Commander not configured")
@@ -1943,6 +2260,7 @@ async def issue_command(request: Request, user=Depends(require_perm("commands"))
     command  = body.get("command")
     if command not in ALLOWED_COMMANDS:
         raise HTTPException(400, f"Command not in allowed list")
+    _enforce_site(user, site, what="this device")
     client = s3(commander=True)
     if not client:
         raise HTTPException(503, "Commander credentials not configured")
@@ -1962,6 +2280,7 @@ async def get_command_result(site_name: str, hostname: str, request: Request):
     user = await get_user(request)
     if not user:
         raise HTTPException(401, "Authentication required")
+    _enforce_site(user, site_name, what="this device")
     client = s3()
     if not client:
         raise HTTPException(503, "Oracle not configured")
@@ -1978,15 +2297,15 @@ async def get_overview(request: Request):
     if not user:
         raise HTTPException(401, "Authentication required")
     asyncio.create_task(_maybe_kick_retention_sweep())
-    settings = _get_settings()
+    settings = _get_settings(_scope_site(user))
     offline_threshold_hours = settings.get("offline_threshold_hours", 1)
     offline_days_warning    = settings.get("offline_days_warning", 7)
     mttd_target             = int(settings.get("mttd_target_minutes", 30))
     mttr_target             = int(settings.get("mttr_target_minutes", 120))
 
-    devices  = fetch_inventory()
-    alerts   = fetch_all_alerts()
-    machines = fetch_status()
+    devices  = _filter_by_site(user, fetch_inventory())
+    alerts   = _filter_by_site(user, fetch_all_alerts())
+    machines = _filter_by_site(user, fetch_status())
     now      = datetime.datetime.utcnow()
 
     online, offline, long_offline = [], [], []
@@ -2072,56 +2391,107 @@ async def get_overview(request: Request):
     })
 
 
+def _resolve_target_site(user: dict, query_site: Optional[str]) -> Optional[str]:
+    """Resolves which layer a GET/PUT/DELETE of a layered config
+    (settings / agent-schedule / retention-policy) should operate on.
+    - oem_admin: whatever `site` query param says (None = the OEM-global
+      layer itself).
+    - site-scoped user: always their own site, regardless of any `site`
+      query param supplied — this is what stops a site-admin from ever
+      touching the OEM-global doc, or another org's override, just by
+      passing a different ?site=... value."""
+    scope = _scope_site(user)
+    return query_site if scope is None else scope
+
+
 @app.get("/api/settings")
-async def get_settings(request: Request):
+async def get_settings(request: Request, site: Optional[str] = None):
     user = await get_user(request)
     if not user:
         raise HTTPException(401, "Authentication required")
-    return JSONResponse(_get_settings())
+    return JSONResponse(_get_settings(_resolve_target_site(user, site)))
 
 
 @app.put("/api/settings")
-async def update_settings(request: Request, user=Depends(require_perm("settings"))):
+async def update_settings(request: Request, site: Optional[str] = None,
+                           user=Depends(require_perm("settings"))):
     body = await request.json()
     allowed = {"offline_threshold_hours", "offline_days_warning", "org_name",
                "mttd_target_minutes", "mttr_target_minutes", "dashboard_title"}
-    settings = _get_settings()
-    for k, v in body.items():
-        if k in allowed:
-            settings[k] = v
-    settings["updated_at"] = datetime.datetime.utcnow().isoformat()
+    target = _resolve_target_site(user, site)
+    if target and not _find_org(target):
+        raise HTTPException(400, f"'{target}' is not a registered organization")
+    key = SETTINGS_KEY if not target else _site_override_key(SETTINGS_KEY, target)
     client = s3(commander=True)
     if not client:
         raise HTTPException(503, "Commander not configured")
-    s3_put(client, SETTINGS_KEY, settings)
-    return JSONResponse(settings)
+    # Load the RAW doc at the key we're writing to (not the merged/
+    # effective view) — otherwise changing one field would freeze every
+    # inherited-from-OEM-global value into this site's override too,
+    # breaking live inheritance for every field the site never touched.
+    existing = s3_get(client, key) or {}
+    for k, v in body.items():
+        if k in allowed:
+            existing[k] = v
+    existing["updated_at"] = datetime.datetime.utcnow().isoformat()
+    existing["updated_by"] = user["username"]
+    s3_put(client, key, existing)
+    return JSONResponse(_get_settings(target))
+
+
+@app.delete("/api/settings")
+async def clear_settings_override(site: Optional[str] = None, user=Depends(require_perm("settings"))):
+    """Reverts a site back to the OEM-global dashboard settings by
+    deleting its entire override doc. Not available at the OEM-global
+    layer itself (there's nothing to fall back to from there)."""
+    target = _resolve_target_site(user, site)
+    if not target:
+        raise HTTPException(400, "Nothing to clear at the OEM-global layer")
+    client = s3(commander=True)
+    if client:
+        try:
+            client.delete_object(Bucket=ORACLE_BUCKET, Key=_site_override_key(SETTINGS_KEY, target))
+        except Exception:
+            pass
+    return JSONResponse(_get_settings(target))
 
 
 @app.get("/api/agent-schedule")
-async def get_agent_schedule(request: Request):
+async def get_agent_schedule(request: Request, site: Optional[str] = None):
     """Returns the current dashboard-configurable endpoint agent schedule
     (SME-DefenderAudit/DNSAudit/USBLockdown/ProcessMonitor/ThreatReporter/
     TimelineCollector/Reporter/CommandExecutor), merged with defaults for
-    any key never explicitly saved."""
+    any key never explicitly saved, layered OEM-global then (if scoped, or
+    ?site= given by an oem_admin) that site's own override."""
     user = await get_user(request)
     if not user:
         raise HTTPException(401, "Authentication required")
-    return JSONResponse(_get_agent_schedule())
+    return JSONResponse(_get_agent_schedule(_resolve_target_site(user, site)))
 
 
 @app.put("/api/agent-schedule")
-async def update_agent_schedule(request: Request, user=Depends(require_perm("settings"))):
-    """Saves the endpoint agent schedule to config/agent_schedule.json in
-    Oracle. Every installed SMESecurityAgent service reads this object
-    directly on its own cycle (see agent.py) and applies changed
-    intervals/enable-toggles live, without a service restart."""
+async def update_agent_schedule(request: Request, site: Optional[str] = None,
+                                 user=Depends(require_perm("settings"))):
+    """Saves the endpoint agent schedule either to the OEM-global doc or
+    to one site's override doc (see _resolve_target_site). Every installed
+    SMESecurityAgent service reads BOTH objects directly on its own cycle
+    (global always, plus its own site's override — see agent.py) and
+    applies changed intervals/enable-toggles live, without a service
+    restart, with the site override always winning per-field."""
     body = await request.json()
-    schedule = _get_agent_schedule()
+    target = _resolve_target_site(user, site)
+    if target and not _find_org(target):
+        raise HTTPException(400, f"'{target}' is not a registered organization")
+    key = AGENT_SCHEDULE_KEY if not target else _site_override_key(AGENT_SCHEDULE_KEY, target)
+    client = s3(commander=True)
+    if not client:
+        raise HTTPException(503, "Commander not configured")
+    existing = s3_get(client, key) or {}
     for k, v in body.items():
         if k not in DEFAULT_AGENT_SCHEDULE:
             continue
         if isinstance(DEFAULT_AGENT_SCHEDULE[k], bool):
-            schedule[k] = bool(v)
+            existing[k] = bool(v)
         else:
             try:
                 iv = int(v)
@@ -2130,37 +2500,68 @@ async def update_agent_schedule(request: Request, user=Depends(require_perm("set
             floor = AGENT_SCHEDULE_MIN.get(k, 1)
             if iv < floor:
                 raise HTTPException(400, f"'{k}' must be at least {floor}")
-            schedule[k] = iv
-    schedule["updated_at"] = datetime.datetime.utcnow().isoformat()
-    schedule["updated_by"] = user["username"]
+            existing[k] = iv
+    existing["updated_at"] = datetime.datetime.utcnow().isoformat()
+    existing["updated_by"] = user["username"]
+    s3_put(client, key, existing)
+    return JSONResponse(_get_agent_schedule(target))
+
+
+@app.delete("/api/agent-schedule")
+async def clear_agent_schedule_override(site: Optional[str] = None, user=Depends(require_perm("settings"))):
+    target = _resolve_target_site(user, site)
+    if not target:
+        raise HTTPException(400, "Nothing to clear at the OEM-global layer")
     client = s3(commander=True)
-    if not client:
-        raise HTTPException(503, "Commander not configured")
-    s3_put(client, AGENT_SCHEDULE_KEY, schedule)
-    return JSONResponse(schedule)
+    if client:
+        try:
+            client.delete_object(Bucket=ORACLE_BUCKET, Key=_site_override_key(AGENT_SCHEDULE_KEY, target))
+        except Exception:
+            pass
+    return JSONResponse(_get_agent_schedule(target))
 
 
 @app.get("/api/retention-policy")
-async def get_retention_policy(request: Request):
+async def get_retention_policy(request: Request, site: Optional[str] = None):
     """Returns the merged retention policy with the destination secret key
-    redacted (see _get_retention_policy). Endpoint agents read the raw
-    Oracle object directly rather than calling this API."""
+    redacted (see _get_retention_policy), layered OEM-global then (if
+    scoped, or ?site= given by an oem_admin) that site's own override."""
     user = await get_user(request)
     if not user:
         raise HTTPException(401, "Authentication required")
-    policy = _get_retention_policy(redact=True)
-    policy["last_run"] = _get_retention_last_run()
+    target = _resolve_target_site(user, site)
+    policy = _get_retention_policy(redact=True, site_name=target)
+    policy["last_run"] = _get_retention_last_run(target)
     return JSONResponse(policy)
 
 
 @app.put("/api/retention-policy")
-async def update_retention_policy(request: Request, user=Depends(require_perm("settings"))):
-    """Saves the retention policy to Oracle. Deletion is destructive, so
-    every field is validated defensively and an omitted/blank destination
-    secret_key means 'keep the existing one' rather than 'clear it' — this
-    is a write-only field the browser never sees back from GET."""
+async def update_retention_policy(request: Request, site: Optional[str] = None,
+                                   user=Depends(require_perm("settings"))):
+    """Saves the retention policy either to the OEM-global doc or to one
+    site's override doc (see _resolve_target_site). Deletion is
+    destructive, so every field is validated defensively and an omitted/
+    blank destination secret_key means 'keep the existing one' rather
+    than 'clear it' — this is a write-only field the browser never sees
+    back from GET. Loads the RAW doc at the target key (not the merged
+    effective view) so untouched fields keep inheriting live from the
+    OEM-global default instead of being frozen into the site override."""
     body = await request.json()
-    current = _get_retention_policy(redact=False)
+    target = _resolve_target_site(user, site)
+    if target and not _find_org(target):
+        raise HTTPException(400, f"'{target}' is not a registered organization")
+    key = RETENTION_POLICY_KEY if not target else _site_override_key(RETENTION_POLICY_KEY, target)
+    client = s3(commander=True)
+    if not client:
+        raise HTTPException(503, "Commander not configured")
+    current = s3_get(client, key) or {}
+    current.setdefault("targets", {})
+    current.setdefault("move_destination", {})
+    # For validation/defaulting convenience, work against the effective
+    # (merged) view for anything not explicitly present in the raw doc,
+    # but only ever WRITE the fields the request actually touches (plus
+    # whatever was already explicitly set in this doc before).
+    effective = _get_retention_policy(redact=False, site_name=target)
 
     if "enabled" in body:
         current["enabled"] = bool(body["enabled"])
@@ -2195,7 +2596,7 @@ async def update_retention_policy(request: Request, user=Depends(require_perm("s
 
     if "targets" in body and isinstance(body["targets"], dict):
         for k, v in body["targets"].items():
-            if k in current["targets"]:
+            if k in effective["targets"]:
                 current["targets"][k] = bool(v)
 
     if "move_destination" in body and isinstance(body["move_destination"], dict):
@@ -2208,34 +2609,54 @@ async def update_retention_policy(request: Request, user=Depends(require_perm("s
         if d.get("secret_key"):
             current["move_destination"]["secret_key"] = d["secret_key"]
 
-    if current["action"] == "move" and not all(
-        current["move_destination"].get(k) for k in ("endpoint", "access_key", "bucket")
-    ) and not current["move_destination"].get("secret_key"):
-        raise HTTPException(400, "Move destination needs at least endpoint, access key, secret key, and bucket")
+    # Validate against the EFFECTIVE (post-merge) action/destination, since
+    # a site override might only set 'action':'move' while still legally
+    # inheriting the OEM-global move_destination.
+    check_action = current.get("action", effective["action"])
+    check_dest = dict(effective["move_destination"])
+    check_dest.update(current.get("move_destination", {}))
+    if check_action == "move" and not all(check_dest.get(k) for k in ("endpoint", "access_key", "bucket")) \
+            and not check_dest.get("secret_key"):
+        raise HTTPException(400, "Move destination needs at least endpoint, access key, secret key, and bucket "
+                                  "(inherited from the OEM default counts)")
 
     current["updated_at"] = datetime.datetime.utcnow().isoformat()
     current["updated_by"] = user["username"]
-    client = s3(commander=True)
-    if not client:
-        raise HTTPException(503, "Commander not configured")
-    s3_put(client, RETENTION_POLICY_KEY, current)
-    out = _get_retention_policy(redact=True)
+    s3_put(client, key, current)
+    out = _get_retention_policy(redact=True, site_name=target)
     return JSONResponse(out)
 
 
+@app.delete("/api/retention-policy")
+async def clear_retention_policy_override(site: Optional[str] = None, user=Depends(require_perm("settings"))):
+    target = _resolve_target_site(user, site)
+    if not target:
+        raise HTTPException(400, "Nothing to clear at the OEM-global layer")
+    client = s3(commander=True)
+    if client:
+        try:
+            client.delete_object(Bucket=ORACLE_BUCKET, Key=_site_override_key(RETENTION_POLICY_KEY, target))
+        except Exception:
+            pass
+    return JSONResponse(_get_retention_policy(redact=True, site_name=target))
+
+
 @app.post("/api/retention-policy/run-now")
-async def run_retention_policy_now(user=Depends(require_perm("settings"))):
+async def run_retention_policy_now(site: Optional[str] = None, user=Depends(require_perm("settings"))):
     """Runs the cloud-side sweep immediately and waits for the result
     (dispatched to a thread pool executor so it doesn't block the event
-    loop). The endpoint-side half runs on its own inside each agent and
-    isn't triggerable from here — see agent.py."""
+    loop). A site-scoped admin always sweeps only their own org; an OEM
+    admin can pass ?site=X to sweep just one org, or omit it to sweep
+    every registered org at once. The endpoint-side half runs on its own
+    inside each agent and isn't triggerable from here — see agent.py."""
     global _retention_sweep_running
     if _retention_sweep_running:
         raise HTTPException(409, "A retention sweep is already running")
+    target = _resolve_target_site(user, site)
     _retention_sweep_running = True
     try:
         loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(None, run_retention_sweep, "manual")
+        result = await loop.run_in_executor(None, run_retention_sweep, "manual", target)
     finally:
         _retention_sweep_running = False
     cache_bust("alerts")
@@ -2257,10 +2678,16 @@ async def get_ai_settings(request: Request):
 
 @app.put("/api/ai-settings")
 async def update_ai_settings(request: Request, user=Depends(require_perm("settings"))):
-    """Saves the model string and/or API key to Oracle. api_key is
-    write-only and sticky: an omitted or blank value means 'keep the
-    existing one', exactly like the retention policy's move-destination
-    secret — the browser never sees a previously-saved key back."""
+    """Saves the model string and/or API key to Oracle. OEM-only: this is
+    a single shared billing credential across every organization, not
+    something a site-admin can delegate/override per-org (see the AI
+    Analysis card's comment in dashboard.html for the same reasoning).
+    api_key is write-only and sticky: an omitted or blank value means
+    'keep the existing one', exactly like the retention policy's
+    move-destination secret — the browser never sees a previously-saved
+    key back."""
+    if _scope_site(user) is not None:
+        raise HTTPException(403, "Only an OEM admin can change the AI model/API key (it applies platform-wide)")
     body = await request.json()
     current = _get_ai_settings(redact=False)
     if "model" in body:
