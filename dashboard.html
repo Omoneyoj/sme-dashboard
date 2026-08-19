@@ -650,20 +650,23 @@ ${cA?`<td class="iac"><button class="btn btn-g" style="font-size:10px;padding:3p
   _TL=d.timeline||[];_TLdev={site,hostname};_tlF='';_tlType='';_tlStart='';_tlEnd='';
   renderTimelineTab();
 
-  _BH=d.browsing_history||[];_bhF='';
+  _BH=d.browsing_history||[];_bhF='';_BHdev={site,hostname};
   renderBrowsingHistoryTab();
 }
 
 // ── Device Browsing History tab: opt-in per-org snapshot (Chrome/Edge/
 // Firefox), kept entirely separate from the Timeline event stream — see
 // browser_history_collector.py and the Telemetry Policy settings card ──
-let _BH=[],_bhF='';
+let _BH=[],_bhF='',_BHdev={site:'',hostname:''};
 
 function renderBrowsingHistoryTab(){
   const sub=document.getElementById('sub-dbh');
   if(!sub)return;
+  const forceBtn=(statusId)=>_user?.perms?.includes('commands')?`<button class="btn btn-g" style="font-size:11px" onclick="cmd('${eA(_BHdev.site)}','${eA(_BHdev.hostname)}','force_browsing_history',this,'${statusId}')">&#x21BA; Force Collection Now</button>`:'';
   if(!_BH.length){
-    sub.innerHTML=`<div class="empty" style="padding:24px">No browsing history captured. This is opt-in per organization &mdash; enable it under Settings &gt; Telemetry Policy if you want it for this device.</div>`;
+    sub.innerHTML=`<div class="empty" style="padding:24px">No browsing history captured. This is opt-in per organization &mdash; enable it under Settings &gt; Telemetry Policy if you want it for this device.
+<div style="margin-top:12px">${forceBtn('bh-force-st-empty')}</div><div class="cmd-st" id="bh-force-st-empty" style="font-size:11px;color:var(--muted);margin-top:6px"></div>
+</div>`;
     return;
   }
   const q=_bhF.toLowerCase();
@@ -671,8 +674,10 @@ function renderBrowsingHistoryTab(){
   const browserBadge=b=>({chrome:'b-amber',edge:'b-blue',firefox:'b-red'}[b]||'b-muted');
   sub.innerHTML=`<div class="filter-bar">
 <input class="fi" value="${esc(_bhF)}" placeholder="Search URL, title, or user..." style="width:260px" oninput="_bhF=this.value;renderBrowsingHistoryTab()">
+${forceBtn('bh-force-st')}
 <div style="font-size:11px;color:var(--muted);margin-left:auto">${rows.length} of ${_BH.length} entries</div>
 </div>
+<div class="cmd-st" id="bh-force-st" style="font-size:11px;color:var(--muted);margin-bottom:4px;min-height:14px"></div>
 <div class="table-wrap" style="max-height:420px;overflow-y:auto"><table><thead><tr><th>Visit Time</th><th>Browser</th><th>User</th><th>Title</th><th>URL</th><th>Visits</th></tr></thead>
 <tbody>${rows.map(e=>`<tr>
 <td style="font-size:11px;white-space:nowrap;color:var(--muted)">${fmtTS(e.visit_time)}</td>
@@ -723,7 +728,12 @@ function tlFiltered(){
 function renderTimelineTab(){
   const sub=document.getElementById('sub-dt');
   if(!sub)return;
-  if(!_TL.length){sub.innerHTML='<div class="empty" style="padding:24px">No timeline yet. Collects every 30 min after startup.</div>';return;}
+  if(!_TL.length){
+    sub.innerHTML=`<div class="empty" style="padding:24px">No timeline yet. Collects every 30 min after startup.
+${_user?.perms?.includes('commands')?`<div style="margin-top:12px"><button class="btn btn-g" style="font-size:11px" onclick="cmd('${eA(_TLdev.site)}','${eA(_TLdev.hostname)}','force_timeline',this,'tl-force-st-empty')">&#x21BA; Force Collection Now</button></div><div class="cmd-st" id="tl-force-st-empty" style="font-size:11px;color:var(--muted);margin-top:6px"></div>`:''}
+</div>`;
+    return;
+  }
   if(!_tlColW)_tlColW=Object.fromEntries(TL_COLS.map(c=>[c.key,c.w]));
   const rows=tlFiltered();
   const types=[...new Set(_TL.map(e=>e.event_type||e.source||'event'))].sort();
@@ -752,8 +762,10 @@ function renderTimelineTab(){
 <span style="color:var(--muted);font-size:11px">&#8594;</span>
 <input class="fi" type="datetime-local" value="${_tlEnd}" onchange="_tlEnd=this.value;renderTimelineTab()" title="End date/time">
 ${active?`<button class="btn btn-g" style="font-size:11px" onclick="_tlF='';_tlType='';_tlStart='';_tlEnd='';renderTimelineTab()">&#x2715; Clear</button>`:''}
+${_user?.perms?.includes('commands')?`<button class="btn btn-g" style="font-size:11px" onclick="cmd('${eA(_TLdev.site)}','${eA(_TLdev.hostname)}','force_timeline',this,'tl-force-st')">&#x21BA; Force Collection Now</button>`:''}
 <button class="btn btn-g" style="font-size:11px;margin-left:auto" onclick="exportTimelineCsv()">&#x2913; Export CSV</button>
 </div>
+<div class="cmd-st" id="tl-force-st" style="font-size:11px;color:var(--muted);margin-bottom:4px;min-height:14px"></div>
 <div style="font-size:11px;color:var(--muted);margin-bottom:8px">${rows.length} of ${_TL.length} event(s)${active?' (filtered)':''} &mdash; drag a column edge to resize, click a row for full detail</div>
 ${!rows.length?'<div class="empty" style="padding:24px">No events match filters</div>':`<div class="table-wrap"><table style="table-layout:fixed;width:100%">${colgroup}${thead}<tbody>${rows.slice().reverse().map(tRow).join('')}</tbody></table></div>`}`;
   if(rows.length)initTlResize();

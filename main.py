@@ -73,7 +73,8 @@ AI_MODEL_CHOICES = [
 DEFAULT_AI_SETTINGS = {"model": "claude-sonnet-5", "api_key": ""}
 
 ALLOWED_COMMANDS = {
-    "force_audit", "force_report", "force_update_check", "enable_enforcement", "disable_enforcement",
+    "force_audit", "force_report", "force_update_check", "force_timeline", "force_browsing_history",
+    "enable_enforcement", "disable_enforcement",
     "isolate_host", "restore_network", "kill_process", "apply_policy",
     "update_rules", "uninstall_app", "sanction_app",
 }
