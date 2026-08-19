@@ -185,6 +185,7 @@ tr:hover .iac{opacity:1;}
     <button class="nav-item" data-page="rules"       onclick="goTo('rules')"><span class="icon">&#x1F4D0;</span>Detection Rules</button>
     <div id="admin-nav" style="display:none">
       <div class="nav-section-label" style="margin-top:8px">Admin</div>
+      <button class="nav-item" data-page="groups"   onclick="goTo('groups')"><span class="icon">&#x1F5C2;</span>Asset Groups</button>
       <button class="nav-item" data-page="users"    onclick="goTo('users')"><span class="icon">&#x1F465;</span>Users</button>
       <button class="nav-item" data-page="settings" onclick="goTo('settings')"><span class="icon">&#x2699;</span>Settings</button>
     </div>
@@ -248,6 +249,13 @@ tr:hover .iac{opacity:1;}
     <div class="modal-foot"><button class="btn btn-g" onclick="cM('om')">Cancel</button><button class="btn btn-p" onclick="saveOrg()">Onboard</button></div>
   </div>
 </div>
+<div id="gm" class="modal-overlay" style="display:none" onclick="cmo(event,'gm')">
+  <div class="modal" style="max-width:500px" onclick="event.stopPropagation()">
+    <div class="modal-hdr"><span class="modal-title" id="gm-t">Group</span><button class="modal-x" onclick="cM('gm')">&#x2715;</button></div>
+    <div class="modal-body" id="gm-b"></div>
+    <div class="modal-foot"><button class="btn btn-g" onclick="cM('gm')">Cancel</button><button class="btn btn-p" onclick="saveGroup()">Save</button></div>
+  </div>
+</div>
 <div id="rm" class="modal-overlay" style="display:none" onclick="cmo(event,'rm')">
   <div class="modal" style="max-width:700px" onclick="event.stopPropagation()">
     <div class="modal-hdr"><span class="modal-title" id="rm-t">Rule</span><button class="modal-x" onclick="cM('rm')">&#x2715;</button></div>
@@ -269,7 +277,8 @@ let _selA=new Set(),_editR=null,_editU=null,_page='overview';
 let _charts={};
 let _siteCtx=null; // OEM admin's currently-selected org for Settings/Users (null = OEM-global / all orgs)
 let _orgs=[]; // cached organization list, oem_admin only
-const PTITLES={overview:'Overview',inventory:'Inventory',alerts:'Alerts',apps:'App Inventory',enforcement:'Enforcement',updates:'Updates',rules:'Detection Rules',users:'User Management',settings:'Settings',orgs:'Organizations'};
+let _settingsGroupCtx=null,_settingsGroupName='',_settingsHostCtx=null; // Settings page: group/device drill-down
+const PTITLES={overview:'Overview',inventory:'Inventory',alerts:'Alerts',apps:'App Inventory',enforcement:'Enforcement',updates:'Updates',rules:'Detection Rules',users:'User Management',settings:'Settings',orgs:'Organizations',groups:'Asset Groups'};
 
 function pTS(s){if(!s)return null;const hasTz=/Z$|[+-]\d{2}:\d{2}$/.test(s);const d=new Date(hasTz?s:s+'Z');return isNaN(d)?null:d;}
 function fmtTS(s){const d=pTS(s);return d?d.toLocaleString():'-';}
@@ -371,6 +380,7 @@ function renderPage(){
   else if(_page==='users')renderUsers(el);
   else if(_page==='settings')renderSettings(el);
   else if(_page==='orgs')renderOrgs(el);
+  else if(_page==='groups')renderGroups(el);
   else el.innerHTML='<div class="empty">Page not found</div>';
 }
 
@@ -576,8 +586,8 @@ async function openDev(site,hostname){
   const r=await api(`/api/device/${encodeURIComponent(site)}/${encodeURIComponent(hostname)}`);
   if(!r.ok){document.getElementById('dm-b').innerHTML='<div class="empty">Failed to load</div>';return;}
   const d=await r.json();
-  document.getElementById('dm-b').innerHTML=`<div class="stabs"><button class="stab active" data-s="dp">Properties</button><button class="stab" data-s="da">Alerts</button><button class="stab" data-s="dap">Apps</button><button class="stab" data-s="dt">Timeline</button></div>
-<div class="spanel active" id="sub-dp"></div><div class="spanel" id="sub-da"></div><div class="spanel" id="sub-dap"></div><div class="spanel" id="sub-dt"></div>`;
+  document.getElementById('dm-b').innerHTML=`<div class="stabs"><button class="stab active" data-s="dp">Properties</button><button class="stab" data-s="da">Alerts</button><button class="stab" data-s="dap">Apps</button><button class="stab" data-s="dt">Timeline</button><button class="stab" data-s="dbh">Browsing History</button></div>
+<div class="spanel active" id="sub-dp"></div><div class="spanel" id="sub-da"></div><div class="spanel" id="sub-dap"></div><div class="spanel" id="sub-dt"></div><div class="spanel" id="sub-dbh"></div>`;
   document.querySelectorAll('#dm .stab').forEach(t=>t.addEventListener('click',()=>{
     document.querySelectorAll('#dm .stab').forEach(x=>x.classList.remove('active'));
     document.querySelectorAll('#dm .spanel').forEach(x=>x.classList.remove('active'));
@@ -585,7 +595,9 @@ async function openDev(site,hostname){
   }));
   const dev=d.device||{};
   const canC=_user?.perms?.includes('commands');
+  const canS=_user?.perms?.includes('settings');
   const se=eA(site),he=eA(hostname);
+  const invDev=_D.find(x=>x.site_name===site&&x.hostname===hostname)||{};
   document.getElementById('sub-dp').innerHTML=`<div class="grid2" style="margin-bottom:14px">
 <div class="prop"><div class="pl">Hostname</div><div class="pv">${esc(dev.hostname||'-')}</div></div>
 <div class="prop"><div class="pl">Site</div><div class="pv">${esc(dev.site_name||'-')}</div></div>
@@ -593,6 +605,20 @@ async function openDev(site,hostname){
 <div class="prop"><div class="pl">Agent</div><div class="pv">${esc(dev.agent_version||'-')}</div></div>
 <div class="prop"><div class="pl">First Seen</div><div class="pv" style="font-size:12px">${fmtTS(dev.first_seen)}</div></div>
 <div class="prop"><div class="pl">Last Seen</div><div class="pv" style="font-size:12px">${fmtTS(dev.last_seen)}</div></div></div>
+<div class="prop" style="margin-bottom:14px">
+<div class="pl" style="margin-bottom:8px">Classification &amp; Groups</div>
+<div class="grid2" style="margin-bottom:8px">
+<div class="ff"><div class="fl">Device Type</div><select id="dv-type" class="fsel" ${canS?'':'disabled'}>
+<option value="" ${!invDev.device_type_override?'selected':''}>Auto (${esc(invDev.device_type||'workstation')})</option>
+<option value="workstation" ${invDev.device_type_override==='workstation'?'selected':''}>Workstation</option>
+<option value="server" ${invDev.device_type_override==='server'?'selected':''}>Server</option>
+<option value="byod" ${invDev.device_type_override==='byod'?'selected':''}>BYOD</option>
+</select></div>
+<div class="ff"><div class="fl">Department</div><input id="dv-dept" class="fip" value="${esc(invDev.department||'')}" placeholder="e.g. Pharmacy Ops" ${canS?'':'disabled'}></div>
+</div>
+${(invDev.groups||[]).length?`<div style="font-size:12px;margin-bottom:8px">Groups: ${invDev.groups.map(g=>`<span class="badge b-blue" style="margin-right:4px">${esc(g.name)}</span>`).join('')}</div>`:'<div style="font-size:11px;color:var(--muted);margin-bottom:8px">Not a member of any group</div>'}
+${canS?`<div class="btn-row"><button class="btn btn-g" style="font-size:11px" onclick="saveDeviceMeta('${se}','${he}')">Save Classification</button><button class="btn btn-g" style="font-size:11px" onclick="goToDevicePolicy('${se}','${he}')">View/Override Policy</button></div>`:''}
+</div>
 ${canC?`<div class="prop" style="margin-bottom:0">
 <div class="pl" style="margin-bottom:8px">Actions</div>
 <div class="btn-row">
@@ -623,15 +649,63 @@ ${cA?`<td class="iac"><button class="btn btn-g" style="font-size:10px;padding:3p
 
   _TL=d.timeline||[];_TLdev={site,hostname};_tlF='';_tlType='';_tlStart='';_tlEnd='';
   renderTimelineTab();
+
+  _BH=d.browsing_history||[];_bhF='';
+  renderBrowsingHistoryTab();
+}
+
+// ── Device Browsing History tab: opt-in per-org snapshot (Chrome/Edge/
+// Firefox), kept entirely separate from the Timeline event stream — see
+// browser_history_collector.py and the Telemetry Policy settings card ──
+let _BH=[],_bhF='';
+
+function renderBrowsingHistoryTab(){
+  const sub=document.getElementById('sub-dbh');
+  if(!sub)return;
+  if(!_BH.length){
+    sub.innerHTML=`<div class="empty" style="padding:24px">No browsing history captured. This is opt-in per organization &mdash; enable it under Settings &gt; Telemetry Policy if you want it for this device.</div>`;
+    return;
+  }
+  const q=_bhF.toLowerCase();
+  const rows=q?_BH.filter(e=>(e.url||'').toLowerCase().includes(q)||(e.title||'').toLowerCase().includes(q)||(e.user||'').toLowerCase().includes(q)):_BH;
+  const browserBadge=b=>({chrome:'b-amber',edge:'b-blue',firefox:'b-red'}[b]||'b-muted');
+  sub.innerHTML=`<div class="filter-bar">
+<input class="fi" value="${esc(_bhF)}" placeholder="Search URL, title, or user..." style="width:260px" oninput="_bhF=this.value;renderBrowsingHistoryTab()">
+<div style="font-size:11px;color:var(--muted);margin-left:auto">${rows.length} of ${_BH.length} entries</div>
+</div>
+<div class="table-wrap" style="max-height:420px;overflow-y:auto"><table><thead><tr><th>Visit Time</th><th>Browser</th><th>User</th><th>Title</th><th>URL</th><th>Visits</th></tr></thead>
+<tbody>${rows.map(e=>`<tr>
+<td style="font-size:11px;white-space:nowrap;color:var(--muted)">${fmtTS(e.visit_time)}</td>
+<td><span class="badge ${browserBadge(e.browser)}" style="font-size:10px">${esc(e.browser||'-')}</span></td>
+<td style="font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100px" title="${esc(e.user||'')}">${esc(e.user||'-')}</td>
+<td style="font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:220px" title="${esc(e.title||'')}">${esc(e.title||'(no title)')}</td>
+<td style="font-size:11px;font-family:monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:280px" title="${esc(e.url||'')}"><a href="${esc(e.url||'#')}" target="_blank" rel="noopener" style="color:var(--cyan);text-decoration:none">${esc(e.url||'-')}</a></td>
+<td style="font-size:11px">${e.visit_count??'-'}</td>
+</tr>`).join('')||'<tr><td colspan="6" class="empty">No entries match your search</td></tr>'}</tbody></table></div>`;
+}
+
+async function saveDeviceMeta(site,hostname){
+  const dtype=document.getElementById('dv-type')?.value||null;
+  const dept=document.getElementById('dv-dept')?.value?.trim()||'';
+  const r=await api(`/api/device-meta/${encodeURIComponent(hostname)}?site=${encodeURIComponent(site)}`,
+    {method:'PUT',body:JSON.stringify({device_type_override:dtype,department:dept})});
+  if(r.ok){alert('Classification saved. Takes effect on the device\'s next policy refresh cycle.');_D=[];await refreshAll();openDev(site,hostname);}
+  else{const d=await r.json().catch(()=>({detail:'Error'}));alert('Failed: '+d.detail);}
+}
+
+function goToDevicePolicy(site,hostname){
+  if(_user?.role==='oem_admin')_siteCtx=site;
+  _settingsHostCtx=hostname;_settingsGroupCtx=null;
+  goTo('settings');
 }
 
 // ── Device Timeline tab: table view with type/content/date-range filters,
 // resizable columns, clickable rows (full detail modal) + CSV export ──
 let _TL=[],_TLdev={site:'',hostname:''},_tlF='',_tlType='',_tlStart='',_tlEnd='';
-const TL_ICON={process_creation:'&#x2699;',logon:'&#x1F511;',logon_failure:'&#x26A0;',logoff:'&#x1F6AA;',service_installed:'&#x1F6E0;',service_crash:'&#x1F4A5;',threat_detected:'&#x1F6A8;',rule_match:'&#x1F4CB;',usb_execution:'&#x1F4BE;',suspicious_process:'&#x1F534;',network_connection:'&#x1F310;',defender:'&#x1F6E1;'};
-const TL_COLOR={process_creation:'var(--blue)',logon:'var(--green)',logon_failure:'var(--red)',logoff:'var(--muted)',service_installed:'var(--amber)',service_crash:'var(--red)',threat_detected:'var(--red)',rule_match:'var(--amber)',usb_execution:'var(--amber)',suspicious_process:'var(--red)',network_connection:'var(--cyan)',defender:'var(--blue)'};
+const TL_ICON={process_creation:'&#x2699;',logon:'&#x1F511;',logon_failure:'&#x26A0;',logoff:'&#x1F6AA;',service_installed:'&#x1F6E0;',service_crash:'&#x1F4A5;',threat_detected:'&#x1F6A8;',rule_match:'&#x1F4CB;',usb_execution:'&#x1F4BE;',suspicious_process:'&#x1F534;',network_connection:'&#x1F310;',defender:'&#x1F6E1;',dns_query:'&#x1F50D;'};
+const TL_COLOR={process_creation:'var(--blue)',logon:'var(--green)',logon_failure:'var(--red)',logoff:'var(--muted)',service_installed:'var(--amber)',service_crash:'var(--red)',threat_detected:'var(--red)',rule_match:'var(--amber)',usb_execution:'var(--amber)',suspicious_process:'var(--red)',network_connection:'var(--cyan)',defender:'var(--blue)',dns_query:'var(--cyan)'};
 const TL_SEARCH_FIELDS=['threat_name','process_name','command_line','path','user','parent_name','source_ip','remote_address','event_type'];
-const TL_CSV_COLS=['time','event_type','process_name','pid','parent_name','user','command_line','path','logon_type','source_ip','remote_address','remote_port','threat_name','severity','action'];
+const TL_CSV_COLS=['time','event_type','process_name','pid','parent_name','user','command_line','path','logon_type','source_ip','remote_address','remote_port','threat_name','severity','action','query_name','query_type','query_results','query_status'];
 // Column widths (px) — user-adjustable via drag handles, kept for the
 // rest of the session so re-filtering doesn't reset them.
 const TL_COLS=[{key:'time',label:'Time',w:130},{key:'type',label:'Type',w:150},{key:'desc',label:'Description',w:190},{key:'pid',label:'PID',w:75},{key:'user',label:'User',w:170},{key:'detail',label:'Detail',w:300},{key:'sev',label:'Severity/Action',w:120}];
@@ -656,8 +730,8 @@ function renderTimelineTab(){
   const active=_tlF||_tlType||_tlStart||_tlEnd;
   const tRow=e=>{
     const et=e.event_type||e.source||'event';const ic=TL_ICON[et]||'&#x25CF;';const co=TL_COLOR[et]||'var(--muted)';
-    const desc=e.threat_name||e.process_name||e.user||'(event)';
-    const detail=e.command_line||e.path||e.remote_address||e.parent_name||'';
+    const desc=e.threat_name||e.process_name||e.query_name||e.user||'(event)';
+    const detail=e.command_line||e.path||e.query_results||e.remote_address||e.parent_name||'';
     const user=e.user||'-';
     return `<tr class="cr-row" onclick='oTE(${JSON.stringify(JSON.stringify(e))})'>
 <td style="font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--muted)">${fmtTS(e.time)}</td>
@@ -720,7 +794,7 @@ function oTE(js){
   const rows=[
     ['Time',fmtTS(e.time)],
     ['Type',et],
-    ['Description',e.threat_name||e.process_name||e.user||'(event)'],
+    ['Description',e.threat_name||e.process_name||e.query_name||e.user||'(event)'],
     ['PID',e.pid!=null?String(e.pid):''],
     ['Parent Process',e.parent_name||''],
     ['User',e.user||''],
@@ -731,6 +805,10 @@ function oTE(js){
     ['Threat Name',e.threat_name||''],
     ['Severity',e.severity||''],
     ['Action',e.action||''],
+    ['DNS Query',e.query_name||''],
+    ['DNS Query Type',e.query_type||''],
+    ['DNS Results',e.query_results||''],
+    ['DNS Status',e.query_status||''],
   ].filter(([,v])=>v);
   document.getElementById('em-b').innerHTML=`<div class="grid2" style="margin-bottom:14px">
 ${rows.map(([k,v])=>`<div class="prop"><div class="pl">${esc(k)}</div><div class="pv" style="font-size:13px;word-break:break-all">${esc(String(v))}</div></div>`).join('')}
@@ -1046,42 +1124,66 @@ async function blkUninst(){
 
 
 
-function rulesQS(){
-  // oem_admin edits the OEM-global rule set; a site-scoped user always
-  // edits their own site's rule set (site-level rules layer on top of
-  // the OEM-global set for their devices — see main.py _save_rules).
+function rulesEffectiveSite(){
+  return _user?.role==='oem_admin' ? _siteCtx : (_user?.site_name||null);
+}
+let _rulesGroupCtx=null;
+
+function rulesQS(forWrite){
+  // A selected group always wins (works for both oem_admin and
+  // site-scoped users — the backend resolves which org owns it and
+  // enforces scope regardless). Otherwise: oem_admin edits the
+  // OEM-global rule set by default; a site-scoped user always edits
+  // their own site's rule set (site-level rules layer on top of the
+  // OEM-global set for their devices — see main.py _save_rules).
+  if(_rulesGroupCtx)return `scope=group&group_id=${encodeURIComponent(_rulesGroupCtx)}`;
   return _user?.role==='oem_admin' ? 'scope=global' : `scope=site&site=${encodeURIComponent(_user?.site_name||'')}`;
 }
 
 async function renderRules(el){
   try{
+    const site=rulesEffectiveSite();
+    if(site && !_groupsCache.length){
+      const gr=await api(`/api/groups?site=${encodeURIComponent(site)}`);
+      if(gr.ok)_groupsCache=(await gr.json()).groups||[];
+    }
     const r=await api(`/api/rules?${rulesQS()}`);if(!r.ok){el.innerHTML='<div class="empty">Failed</div>';return;}
     const{rules}=await r.json();_R=rules||[];const cC=_user?.perms?.includes('commands');
-    const scopeLabel=_user?.role==='oem_admin'?'OEM-Global':`Site: ${esc(_user?.org_display_name||_user?.site_name||'')}`;
-    el.innerHTML=`<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+    const baseLabel=_user?.role==='oem_admin'?'OEM-Global':`Site: ${esc(_user?.org_display_name||_user?.site_name||'')}`;
+    const scopeLabel=_rulesGroupCtx?`Group: ${esc((_groupsCache.find(g=>g.id===_rulesGroupCtx)||{}).name||_rulesGroupCtx)}`:baseLabel;
+    const groupPicker=(site&&_groupsCache.length)?`<select class="fs" style="margin-left:auto" onchange="_rulesGroupCtx=this.value||null;renderRules(document.getElementById('content'))">
+<option value="">${esc(baseLabel)}</option>
+${_groupsCache.map(g=>`<option value="${esc(g.id)}" ${g.id===_rulesGroupCtx?'selected':''}>Group: ${esc(g.name)}</option>`).join('')}
+</select>`:'';
+    el.innerHTML=`<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;gap:10px">
 <div><h2 style="font-size:15px;font-weight:700;margin-bottom:3px">Detection Rules</h2>
 <p style="font-size:12px;color:var(--muted)">Editing: <strong>${scopeLabel}</strong> &middot; rules push to endpoints within 5 min.</p></div>
+${groupPicker}
 ${cC?'<button class="btn btn-p" onclick="openRE(null)">+ New Rule</button>':''}
 </div>
-<div class="table-wrap"><table><thead><tr><th>Name</th><th>Severity</th><th>MITRE</th><th>Conditions</th><th>Actions</th><th>Status</th>${cC?'<th></th>':''}</tr></thead>
+<div class="table-wrap"><table><thead><tr><th>Name</th><th>Severity</th><th>MITRE</th><th>Conditions</th><th>Exemptions</th><th>Actions</th><th>Status</th>${cC?'<th></th>':''}</tr></thead>
 <tbody>${_R.map(r=>{
   const sc=r.severity==='CRITICAL'?'b-red':r.severity==='HIGH'?'b-amber':'b-blue';
   const cds=Object.entries(r.conditions||{}).map(([k,v])=>`<div style="font-size:10px;color:var(--muted)">${k}: ${Array.isArray(v)?v.join(', '):v}</div>`).join('')||'<span style="color:var(--muted);font-size:11px">Any</span>';
   const acs=(r.actions||[]).map(a=>({alert_only:'&#x1F514;',kill_process:'&#x274C;',isolate_host:'&#x1F512;',block_network:'&#x1F6AB;',collect_forensics:'&#x1F50D;'}[a]||a)).join(' ');
+  const ex=r.exemptions||{};
+  const exN=(ex.hostnames||[]).length+(ex.groups||[]).length+(ex.device_types||[]).length+(ex.os_contains||[]).length;
   return `<tr><td><strong>${esc(r.name)}</strong>${r.description?`<div style="font-size:11px;color:var(--muted)">${esc(r.description)}</div>`:''}</td>
 <td><span class="badge ${sc}">${esc(r.severity||'?')}</span></td>
 <td style="font-size:11px;color:var(--muted)">${esc(r.mitre_tactic||'-')}</td>
-<td>${cds}</td><td style="font-size:16px">${acs}</td>
+<td>${cds}</td>
+<td style="font-size:11px;color:var(--muted)">${exN?`${exN} rule(s)`:'None'}</td>
+<td style="font-size:16px">${acs}</td>
 <td><span class="badge ${r.enabled!==false?'b-green':'b-muted'}">${r.enabled!==false?'Active':'Off'}</span></td>
 ${cC?`<td class="iac"><button class="btn btn-g" style="font-size:10px;padding:3px 8px" onclick='openRE(${JSON.stringify(JSON.stringify(r))})'>Edit</button><button class="btn btn-d" style="font-size:10px;padding:3px 8px" onclick="delRule('${eA(r.id)}')">Delete</button></td>`:''}
-</tr>`;}).join('')||'<tr><td colspan="7" class="empty">No rules yet</td></tr>'}</tbody></table></div>`;
+</tr>`;}).join('')||'<tr><td colspan="8" class="empty">No rules yet</td></tr>'}</tbody></table></div>`;
   }catch(ex){el.innerHTML=`<div class="empty">Error: ${ex}</div>`;}
 }
 
 const ACTS=[{id:'alert_only',l:'Alert Only',i:'&#x1F514;',d:'Log only'},{id:'kill_process',l:'Terminate Process',i:'&#x274C;',d:'Kill process'},{id:'isolate_host',l:'Isolate Endpoint',i:'&#x1F512;',d:'Block all network'},{id:'block_network',l:'Block Network',i:'&#x1F6AB;',d:'Block connection'},{id:'collect_forensics',l:'Collect Forensics',i:'&#x1F50D;',d:'Gather evidence'}];
 
 function openRE(js){
-  _editR=js?JSON.parse(js):null;const r=_editR;const c=r?.conditions||{};const a=new Set(r?.actions||['alert_only']);
+  _editR=js?JSON.parse(js):null;const r=_editR;const c=r?.conditions||{};const a=new Set(r?.actions||['alert_only']);const ex=r?.exemptions||{};
   document.getElementById('rm-t').textContent=r?'Edit Rule: '+r.name:'New Rule';
   document.getElementById('rm-b').innerHTML=`<div class="fg">
 <div class="ff"><div class="fl">Rule Name *</div><input id="rn" class="fip" value="${esc(r?.name||'')}" placeholder="e.g. Office Macro Spawning Shell"></div>
@@ -1105,6 +1207,13 @@ ${ACTS.map(ac=>`<label style="display:flex;align-items:center;gap:10px;backgroun
 <input type="checkbox" id="ra-${ac.id}" ${a.has(ac.id)?'checked':''} style="accent-color:var(--blue);width:14px;height:14px">
 <span style="font-size:16px">${ac.i}</span>
 <span><strong style="font-size:13px">${ac.l}</strong><br><span style="font-size:11px;color:var(--muted)">${ac.d}</span></span></label>`).join('')}
+</div>
+<div class="sec-title" style="margin:14px 0 10px">Exemptions <span style="font-size:11px;font-weight:400;color:var(--muted)">(this rule never fires for a matching device, even if conditions match)</span></div>
+<div class="fg">
+<div class="ff"><div class="fl">Hostnames</div><input id="rex-host" class="fip" value="${esc((ex.hostnames||[]).join(', '))}" placeholder="PHARM-PC01, PHARM-PC02"></div>
+<div class="ff"><div class="fl">Groups</div><input id="rex-grp" class="fip" value="${esc((ex.groups||[]).join(', '))}" placeholder="group IDs, comma-separated"></div>
+<div class="ff"><div class="fl">Device Types</div><div style="display:flex;gap:14px;margin-top:6px">${['workstation','server','byod'].map(t=>`<label style="display:flex;align-items:center;gap:5px;font-size:12px;cursor:pointer"><input type="checkbox" id="rex-dt-${t}" ${(ex.device_types||[]).includes(t)?'checked':''} style="accent-color:var(--blue)"> ${t}</label>`).join('')}</div></div>
+<div class="ff"><div class="fl">OS Contains</div><input id="rex-os" class="fip" value="${esc((ex.os_contains||[]).join(', '))}" placeholder="Server, Windows 10"></div>
 </div>`;
   document.getElementById('rm').style.display='flex';
 }
@@ -1112,6 +1221,7 @@ ${ACTS.map(ac=>`<label style="display:flex;align-items:center;gap:10px;backgroun
 async function saveRule(){
   const name=document.getElementById('rn')?.value?.trim();if(!name){alert('Name required');return;}
   const csv=s=>s.split(',').map(x=>x.trim().toLowerCase()).filter(Boolean);
+  const csvRaw=s=>s.split(',').map(x=>x.trim()).filter(Boolean);
   const conds={};
   const pp=csv(document.getElementById('rpp')?.value||'');if(pp.length)conds.parent_process=pp;
   const pn=csv(document.getElementById('rpn')?.value||'');if(pn.length)conds.process_name=pn;
@@ -1121,16 +1231,23 @@ async function saveRule(){
   const dom=csv(document.getElementById('rdom')?.value||'');if(dom.length)conds.domain_contains=dom;
   const actions=ACTS.filter(a=>document.getElementById('ra-'+a.id)?.checked).map(a=>a.id);
   if(!actions.length)actions.push('alert_only');
-  const payload={name,description:document.getElementById('rd')?.value?.trim()||'',severity:document.getElementById('rsev')?.value||'MEDIUM',mitre_tactic:document.getElementById('rmt')?.value?.trim()||'',enabled:document.getElementById('ren')?.value!=='false',conditions:conds,actions};
-  const isN=!_editR;const url=isN?'/api/rules?scope=global':`/api/rules/${_editR.id}?scope=global`;
+  const exemptions={
+    hostnames:csvRaw(document.getElementById('rex-host')?.value||''),
+    groups:csvRaw(document.getElementById('rex-grp')?.value||''),
+    device_types:['workstation','server','byod'].filter(t=>document.getElementById('rex-dt-'+t)?.checked),
+    os_contains:csvRaw(document.getElementById('rex-os')?.value||''),
+  };
+  const payload={name,description:document.getElementById('rd')?.value?.trim()||'',severity:document.getElementById('rsev')?.value||'MEDIUM',mitre_tactic:document.getElementById('rmt')?.value?.trim()||'',enabled:document.getElementById('ren')?.value!=='false',conditions:conds,actions,exemptions};
+  const isN=!_editR;const url=isN?`/api/rules?${rulesQS()}`:`/api/rules/${_editR.id}?${rulesQS()}`;
   const r=await api(url,{method:isN?'POST':'PUT',body:JSON.stringify(payload)});
   if(r.ok){cM('rm');renderRules(document.getElementById('content'));}
   else{const d=await r.json().catch(()=>({detail:'Error'}));alert('Failed: '+d.detail);}
 }
 async function delRule(id){
   if(!confirm('Delete rule?'))return;
-  const r=await api(`/api/rules/${id}?scope=global`,{method:'DELETE'});
+  const r=await api(`/api/rules/${id}?${rulesQS()}`,{method:'DELETE'});
   if(r.ok)renderRules(document.getElementById('content'));
+  else{const d=await r.json().catch(()=>({detail:'Error'}));alert('Failed: '+d.detail);}
 }
 
 async function renderUsers(el){
@@ -1281,27 +1398,173 @@ function goToOrgSettings(site_name){
   goTo('settings');
 }
 
-async function renderSettings(el){
-  const isAdmin=_user?.perms?.includes('settings');
+// ── Asset Groups: manual/auto membership, used for targeted Rules,
+// Agent Schedule, Retention, and Update Policy overrides & exemptions ──
+let _groupsSiteCtx=null; // which org's groups we're viewing (oem_admin only picks; site-admin always their own)
+let _groupsCache=[];
+
+function groupsEffectiveSite(){
+  return _user?.role==='oem_admin' ? _groupsSiteCtx : (_user?.site_name||null);
+}
+
+async function renderGroups(el){
   const isOem=_user?.role==='oem_admin';
-  // For an oem_admin, _siteCtx (set via the Organizations page's
-  // "Settings" button, or the picker below) selects which layer to view/
-  // edit: null = the OEM-global default; a site_name = that org's
-  // override, layered on top of the OEM default. A site-scoped admin
-  // always edits their own org's layer — the backend enforces this
-  // regardless of any site param, so siteQS is only meaningful for oem_admin.
-  const siteQS = isOem && _siteCtx ? `?site=${encodeURIComponent(_siteCtx)}` : '';
-  const inSiteContext = !isOem || !!_siteCtx; // true = editing one org's layer, not the OEM default
+  const site=groupsEffectiveSite();
   if(isOem && !_orgs.length){
     const orgR=await api('/api/organizations');
     if(orgR.ok)_orgs=(await orgR.json()).organizations||[];
   }
-  const [r,ar,rp,ai,up]=await Promise.all([api('/api/settings'+siteQS),api('/api/agent-schedule'+siteQS),api('/api/retention-policy'+siteQS),api('/api/ai-settings'),api('/api/update-policy'+siteQS)]);
+  const orgPicker=isOem?`<div class="card" style="margin-bottom:16px;max-width:480px">
+<div class="fl" style="margin-bottom:6px">Organization</div>
+<select class="fsel" onchange="_groupsSiteCtx=this.value||null;renderGroups(document.getElementById('content'))">
+<option value="">Select an organization&hellip;</option>
+${_orgs.map(o=>`<option value="${esc(o.site_name)}" ${o.site_name===_groupsSiteCtx?'selected':''}>${esc(o.display_name)}</option>`).join('')}
+</select></div>`:'';
+  if(!site){
+    el.innerHTML=`${orgPicker}<div class="empty">${isOem?'Select an organization above to manage its asset groups.':'No organization context.'}</div>`;
+    return;
+  }
+  try{
+    const r=await api(`/api/groups?site=${encodeURIComponent(site)}`);
+    if(!r.ok){el.innerHTML=`${orgPicker}<div class="empty">Failed to load groups</div>`;return;}
+    const{groups}=await r.json();_groupsCache=groups||[];
+    const devices=_D.filter(d=>d.site_name===site);
+    const memberCount=g=>{
+      const manual=(g.member_hostnames||[]).length;
+      const autoN=g.auto_criteria?devices.filter(d=>groupDeviceMatches(d,g)).length:0;
+      return g.auto_criteria?`${manual+autoN} (auto+manual)`:`${manual}`;
+    };
+    const critLabel=g=>{
+      if(!g.auto_criteria)return '';
+      const c=g.auto_criteria;const parts=[];
+      if(c.device_type)parts.push(`type=${c.device_type}`);
+      if(c.department)parts.push(`dept=${c.department}`);
+      if(c.os_contains)parts.push(`os contains "${c.os_contains}"`);
+      return parts.join(', ');
+    };
+    el.innerHTML=`${orgPicker}
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+<div><h2 style="font-size:15px;font-weight:700;margin-bottom:3px">Asset Groups &mdash; ${esc((_orgs.find(o=>o.site_name===site)||{}).display_name||site)}</h2>
+<p style="font-size:12px;color:var(--muted)">Group devices manually, or automatically by OS/type/department. Groups can be targeted by Rules, Agent Schedule, Retention Policy, and Update Policy overrides &amp; exemptions.</p></div>
+<button class="btn btn-p" onclick="openGroupEdit(null)">+ New Group</button>
+</div>
+<div class="table-wrap"><table><thead><tr><th>Name</th><th>Priority</th><th>Membership</th><th>Devices</th><th></th></tr></thead>
+<tbody>${_groupsCache.map(g=>`<tr>
+<td><strong>${esc(g.name)}</strong></td>
+<td style="font-size:12px;color:var(--muted)">${g.priority||0}</td>
+<td style="font-size:11px;color:var(--muted)">${(g.member_hostnames||[]).length?`${g.member_hostnames.length} explicit`:''}${g.auto_criteria?`${(g.member_hostnames||[]).length?' + ':''}auto: ${esc(critLabel(g))}`:''}${!(g.member_hostnames||[]).length&&!g.auto_criteria?'<span style="color:var(--muted)">Empty</span>':''}</td>
+<td>${memberCount(g)}</td>
+<td class="iac">
+<button class="btn btn-g" style="font-size:11px" onclick='openGroupEdit(${JSON.stringify(JSON.stringify(g))})'>Edit</button>
+<button class="btn btn-g" style="font-size:11px" onclick="goToGroupPolicy('${eA(g.id)}','${eA(g.name)}')">Policy</button>
+<button class="btn btn-d" style="font-size:11px" onclick="delGroup('${eA(g.id)}','${eA(site)}')">Delete</button>
+</td>
+</tr>`).join('')||'<tr><td colspan="5" class="empty">No groups yet &mdash; every device inherits the organization&rsquo;s policy directly.</td></tr>'}</tbody></table></div>`;
+  }catch(ex){el.innerHTML=`${orgPicker}<div class="empty">Error: ${ex}</div>`;}
+}
+
+function groupDeviceMatches(d,g){
+  const c=g.auto_criteria;if(!c)return false;
+  const os=d.os||'';
+  if(c.device_type && c.device_type!==(d.device_type||'workstation'))return false;
+  if(c.department && c.department.toLowerCase()!==(d.department||'').toLowerCase())return false;
+  if(c.os_contains && !os.toLowerCase().includes(c.os_contains.toLowerCase()))return false;
+  return !!(c.device_type||c.department||c.os_contains);
+}
+
+function openGroupEdit(js){
+  const g=js?JSON.parse(js):null;
+  const site=groupsEffectiveSite();
+  const devices=_D.filter(d=>d.site_name===site);
+  const members=new Set(g?.member_hostnames||[]);
+  document.getElementById('gm-t').textContent=g?'Edit Group: '+g.name:'New Group';
+  document.getElementById('gm-b').innerHTML=`<div style="display:flex;flex-direction:column;gap:12px">
+<input type="hidden" id="g-site" value="${esc(site)}">
+<input type="hidden" id="g-id" value="${esc(g?.id||'')}">
+<div class="ff"><div class="fl">Name</div><input id="g-name" class="fip" value="${esc(g?.name||'')}" placeholder="e.g. Front Desk PCs, Pharmacy Servers"></div>
+<div class="ff"><div class="fl">Priority</div><input id="g-priority" class="fip" type="number" value="${g?.priority||0}"><div style="font-size:11px;color:var(--muted);margin-top:3px">When a device belongs to multiple groups with conflicting overrides, the higher-priority group wins.</div></div>
+<div class="sec-title" style="margin-top:6px">Automatic Membership (optional)</div>
+<div style="font-size:11px;color:var(--muted);margin-bottom:6px">Any device matching ALL of the criteria you set below joins automatically. Leave a field blank to ignore it.</div>
+<div class="grid2">
+<div class="ff"><div class="fl">Device Type</div><select id="g-crit-type" class="fsel"><option value="">Any</option><option value="workstation" ${g?.auto_criteria?.device_type==='workstation'?'selected':''}>Workstation</option><option value="server" ${g?.auto_criteria?.device_type==='server'?'selected':''}>Server</option><option value="byod" ${g?.auto_criteria?.device_type==='byod'?'selected':''}>BYOD</option></select></div>
+<div class="ff"><div class="fl">Department</div><input id="g-crit-dept" class="fip" value="${esc(g?.auto_criteria?.department||'')}" placeholder="e.g. Pharmacy Ops"></div>
+</div>
+<div class="ff"><div class="fl">OS contains</div><input id="g-crit-os" class="fip" value="${esc(g?.auto_criteria?.os_contains||'')}" placeholder="e.g. Server, Windows 11"></div>
+<div class="sec-title" style="margin-top:6px">Explicit Members</div>
+<div style="max-height:180px;overflow-y:auto;background:var(--surface2);border-radius:8px;padding:8px">
+${devices.map(d=>`<label style="display:flex;align-items:center;gap:8px;font-size:12px;padding:4px 0;cursor:pointer"><input type="checkbox" class="g-member" value="${esc(d.hostname)}" ${members.has(d.hostname)?'checked':''} style="accent-color:var(--blue)"> ${esc(d.hostname)}</label>`).join('')||'<div style="font-size:12px;color:var(--muted)">No devices reporting for this organization yet</div>'}
+</div>
+</div>`;
+  document.getElementById('gm').style.display='flex';
+}
+
+async function saveGroup(){
+  const site=document.getElementById('g-site')?.value;
+  const id=document.getElementById('g-id')?.value;
+  const name=document.getElementById('g-name')?.value?.trim();
+  if(!name){alert('Name required');return;}
+  const dtype=document.getElementById('g-crit-type')?.value;
+  const dept=document.getElementById('g-crit-dept')?.value?.trim();
+  const osc=document.getElementById('g-crit-os')?.value?.trim();
+  const auto_criteria=(dtype||dept||osc)?{device_type:dtype||undefined,department:dept||undefined,os_contains:osc||undefined}:null;
+  const member_hostnames=[...document.querySelectorAll('.g-member:checked')].map(el=>el.value);
+  const body={site_name:site,name,priority:parseInt(document.getElementById('g-priority')?.value)||0,member_hostnames,auto_criteria};
+  const url=id?`/api/groups/${id}`:'/api/groups';
+  const r=await api(url,{method:id?'PUT':'POST',body:JSON.stringify(body)});
+  if(r.ok){cM('gm');renderGroups(document.getElementById('content'));}
+  else{const d=await r.json().catch(()=>({detail:'Error'}));alert('Failed: '+d.detail);}
+}
+
+async function delGroup(id,site){
+  if(!confirm('Delete this group? Any policy overrides set for it will also be removed.'))return;
+  const r=await api(`/api/groups/${id}?site=${encodeURIComponent(site)}`,{method:'DELETE'});
+  if(r.ok)renderGroups(document.getElementById('content'));
+  else{const d=await r.json().catch(()=>({detail:'Error'}));alert('Failed: '+d.detail);}
+}
+
+function goToGroupPolicy(group_id,group_name){
+  _settingsGroupCtx=group_id;_settingsGroupName=group_name;_settingsHostCtx=null;
+  goTo('settings');
+}
+
+async function renderSettings(el){
+  const isAdmin=_user?.perms?.includes('settings');
+  const isOem=_user?.role==='oem_admin';
+  // For an oem_admin, _siteCtx (set via the Organizations page's
+  // "Settings" button, the picker below, or a Group's "Policy" button)
+  // selects which org's layer to view/edit: null = the OEM-global
+  // default. A site-scoped admin always edits their own org — the
+  // backend enforces this regardless of any site param.
+  //
+  // Within an org, _settingsGroupCtx / _settingsHostCtx drill one layer
+  // deeper still (Agent Schedule / Retention / Update Policy only — the
+  // Dashboard Settings and AI cards stay site/global-only, there's no
+  // per-device "offline threshold"). Only one of the two is ever active;
+  // picking a device clears any group selection and vice versa.
+  const effectiveSite = isOem ? _siteCtx : (_user?.site_name || null);
+  const siteQS = isOem && _siteCtx ? `?site=${encodeURIComponent(_siteCtx)}` : '';
+  const inSiteContext = !isOem || !!_siteCtx; // true = editing one org's layer, not the OEM default
+  const inDrillDown = !!(_settingsGroupCtx || _settingsHostCtx);
+  const policyQS = _settingsHostCtx && effectiveSite
+    ? `?site=${encodeURIComponent(effectiveSite)}&hostname=${encodeURIComponent(_settingsHostCtx)}`
+    : _settingsGroupCtx
+      ? `?group_id=${encodeURIComponent(_settingsGroupCtx)}`
+      : siteQS;
+  if(isOem && !_orgs.length){
+    const orgR=await api('/api/organizations');
+    if(orgR.ok)_orgs=(await orgR.json()).organizations||[];
+  }
+  if(effectiveSite && !_groupsCache.length){
+    const gr=await api(`/api/groups?site=${encodeURIComponent(effectiveSite)}`);
+    if(gr.ok)_groupsCache=(await gr.json()).groups||[];
+  }
+  const [r,ar,rp,ai,up,tp]=await Promise.all([api('/api/settings'+siteQS),api('/api/agent-schedule'+policyQS),api('/api/retention-policy'+policyQS),api('/api/ai-settings'),api('/api/update-policy'+policyQS),api('/api/telemetry-policy'+policyQS)]);
   const s=r.ok?await r.json():{};
   const a=ar.ok?await ar.json():{};
   const p=rp.ok?await rp.json():{};
   const ais=ai.ok?await ai.json():{};
   const upo=up.ok?await up.json():{};
+  const tel=tp.ok?await tp.json():{};
   const chk=(id,checked)=>`<input type="checkbox" id="${id}" ${checked?'checked':''} ${isAdmin?'':'disabled'} style="accent-color:var(--blue);width:14px;height:14px">`;
   const numRow=(id,label,val,note)=>`<div class="ff"><div class="fl">${label}</div><input id="${id}" class="fip" type="number" min="1" value="${val}" ${isAdmin?'':'disabled'}>${note?`<div style="font-size:11px;color:var(--muted);margin-top:3px">${note}</div>`:''}</div>`;
   const moduleRow=(chkId,checked,label,note,intervalHtml)=>`
@@ -1310,21 +1573,33 @@ async function renderSettings(el){
   ${note?`<div style="font-size:11px;color:var(--muted);margin-left:22px">${note}</div>`:''}
   ${intervalHtml?`<div style="margin-left:22px;max-width:280px">${intervalHtml}</div>`:''}
 </div>`;
-  // Per-card "what layer am I looking at" chip, shown above each card's
-  // save button. isSiteOverride comes back from the backend (true only
-  // if this specific org has actually saved its own override there).
-  const layerChip=(isSiteOverride)=>{
+  // Per-card "what layer am I looking at" chip. For Agent Schedule/
+  // Retention/Update Policy, scope_label comes straight back from the
+  // backend (it already knows whether this is OEM Default / a site /a
+  // group / a device) — for Dashboard Settings (site/global only) we
+  // still compute it locally same as before.
+  const layerChip=(isSiteOverride,scopeLabel)=>{
+    if(scopeLabel)return `<span class="badge ${scopeLabel.startsWith('OEM')?'b-muted':'b-amber'}" style="font-size:10px">${esc(scopeLabel)}</span>`;
     if(!inSiteContext)return `<span class="badge b-muted" style="font-size:10px">OEM Default</span>`;
     const orgLabel=isOem?(esc((_orgs.find(o=>o.site_name===_siteCtx)||{}).display_name||_siteCtx)):esc(_user?.org_display_name||_user?.site_name||'');
     return isSiteOverride
       ? `<span class="badge b-amber" style="font-size:10px">Override: ${orgLabel}</span>`
       : `<span class="badge b-muted" style="font-size:10px">${orgLabel} (inheriting OEM default)</span>`;
   };
+  const exemptRow=(exempt,cardKey)=>inSiteContext&&inDrillDown?`<label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;margin-bottom:10px;padding:8px;background:rgba(239,68,68,.06);border:1px solid rgba(239,68,68,.2);border-radius:6px">${chk(`${cardKey}-exempt`,!!exempt)} Exempt this ${_settingsHostCtx?'device':'group'} entirely from this policy</label>`:'';
   const sitePicker = isOem ? `<div class="card" style="margin-bottom:-6px">
 <div class="fl" style="margin-bottom:6px">Editing settings for</div>
-<select class="fsel" onchange="_siteCtx=this.value||null;renderSettings(document.getElementById('content'))">
+<select class="fsel" onchange="_siteCtx=this.value||null;_settingsGroupCtx=null;_settingsHostCtx=null;_groupsCache=[];renderSettings(document.getElementById('content'))">
 <option value="" ${!_siteCtx?'selected':''}>OEM Default (applies to every org unless overridden)</option>
 ${_orgs.map(o=>`<option value="${esc(o.site_name)}" ${o.site_name===_siteCtx?'selected':''}>${esc(o.display_name)}</option>`).join('')}
+</select></div>` : '';
+  const devicesForSite = effectiveSite ? _D.filter(d=>d.site_name===effectiveSite) : [];
+  const drillPicker = (inSiteContext && effectiveSite) ? `<div class="card" style="margin-bottom:-6px">
+<div class="fl" style="margin-bottom:6px">Agent Schedule / Retention / Update Policy scope <span style="font-weight:400;color:var(--muted)">(Dashboard Settings above always applies at the organization level)</span></div>
+<select class="fsel" onchange="const v=this.value;if(v.startsWith('g:')){_settingsGroupCtx=v.slice(2);_settingsHostCtx=null;}else if(v.startsWith('h:')){_settingsHostCtx=v.slice(2);_settingsGroupCtx=null;}else{_settingsGroupCtx=null;_settingsHostCtx=null;}renderSettings(document.getElementById('content'))">
+<option value="" ${!inDrillDown?'selected':''}>Whole Organization</option>
+${_groupsCache.length?`<optgroup label="Groups">${_groupsCache.map(g=>`<option value="g:${esc(g.id)}" ${g.id===_settingsGroupCtx?'selected':''}>${esc(g.name)}</option>`).join('')}</optgroup>`:''}
+${devicesForSite.length?`<optgroup label="Devices">${devicesForSite.map(d=>`<option value="h:${esc(d.hostname)}" ${d.hostname===_settingsHostCtx?'selected':''}>${esc(d.hostname)}</option>`).join('')}</optgroup>`:''}
 </select></div>` : '';
 
   // ── Retention Policy card pieces ──
@@ -1339,6 +1614,7 @@ ${_orgs.map(o=>`<option value="${esc(o.site_name)}" ${o.site_name===_siteCtx?'se
 
   el.innerHTML=`<div style="display:flex;flex-direction:column;gap:20px;max-width:640px">
 ${sitePicker}
+${drillPicker}
 <div class="card">
 <div class="card-header"><div class="card-title">Dashboard Settings</div>${layerChip(s.is_site_override)}</div>
 <div style="display:flex;flex-direction:column;gap:14px">
@@ -1351,8 +1627,9 @@ ${isAdmin?`<div class="btn-row"><button class="btn btn-p" onclick="saveSets()">S
 </div></div>
 
 <div class="card">
-<div class="card-header"><div class="card-title">Endpoint Agent Schedule</div>${layerChip(a.is_site_override)}</div>
+<div class="card-header"><div class="card-title">Endpoint Agent Schedule</div>${layerChip(a.is_site_override||a.is_override,a.scope_label)}</div>
 <div style="font-size:11px;color:var(--muted);margin-bottom:8px">Applies to every installed SMESecurityAgent service. Changes are picked up live by each PC (no reinstall or restart) &mdash; typically within one Command Executor cycle.</div>
+${exemptRow(a.exempt,'ag')}
 <div style="display:flex;flex-direction:column">
 ${moduleRow('ag-usb',a.usb_lockdown_enabled!==false,'SME-USBLockdown','Starts at boot, restarts automatically if it stops, and is started immediately when the service starts. Not intervaled &mdash; on/off only.')}
 ${moduleRow('ag-proc',a.process_monitor_enabled!==false,'SME-ProcessMonitor','Starts at boot, restarts automatically if it stops, and is started immediately when the service starts. Not intervaled &mdash; on/off only.')}
@@ -1366,14 +1643,14 @@ ${moduleRow('ag-timeline',a.timeline_enabled!==false,'SME-TimelineCollector',nul
 </div>
 ${moduleRow('ag-cmd',a.command_executor_enabled!==false,'SME-CommandExecutor','Enables remote commands issued from this dashboard (Audit, Report, Enforce, Isolate, Restore). Turning this off only pauses command execution on the PC &mdash; the schedule check itself keeps running, so this can always be turned back on remotely.',numRow('ag-cmd-m','Interval (minutes)',a.command_executor_interval_minutes||5))}
 </div>
-${isAdmin?`<div class="btn-row" style="margin-top:14px"><button class="btn btn-p" onclick="saveAgentSchedule()">Save Agent Schedule</button>${inSiteContext&&a.is_site_override?'<button class="btn btn-g" onclick="clearAgentSchedule()">Reset to OEM Default</button>':''}</div>`:'<p style="font-size:12px;color:var(--muted);margin-top:10px">Requires Admin role.</p>'}
+${isAdmin?`<div class="btn-row" style="margin-top:14px"><button class="btn btn-p" onclick="saveAgentSchedule()">Save Agent Schedule</button>${inSiteContext&&(a.is_site_override||a.is_override)?'<button class="btn btn-g" onclick="clearAgentSchedule()">Reset to Inherited Default</button>':''}</div>`:'<p style="font-size:12px;color:var(--muted);margin-top:10px">Requires Admin role.</p>'}
 ${a.updated_at?`<div style="font-size:11px;color:var(--muted);margin-top:8px">Last saved ${fmtAge(a.updated_at)} by ${esc(a.updated_by||'-')}</div>`:''}
 </div>
 
 <div class="card">
-<div class="card-header"><div class="card-title">Update Policy</div>${layerChip(upo.is_site_override)}</div>
+<div class="card-header"><div class="card-title">Update Policy</div>${layerChip(upo.is_site_override||upo.is_override,upo.scope_label)}</div>
 <div style="font-size:11px;color:var(--muted);margin-bottom:12px">Controls Defender signature freshness, Windows Update, and third-party app updates via winget for every device. See the Updates tab for live per-device status.</div>
-
+${exemptRow(upo.exempt,'up')}
 <div style="padding:10px 0;border-bottom:1px solid var(--border)">
 <label style="display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;cursor:pointer;margin-bottom:8px">${chk('up-ds-en',upo.defender_signatures?.enabled!==false)} Defender Signature Freshness</label>
 <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;margin:6px 0 8px 22px">${chk('up-ds-auto',upo.defender_signatures?.auto_update!==false)} Auto-update signatures when stale (independent of Enforcement &mdash; pure defense data, no compatibility risk)</label>
@@ -1408,14 +1685,31 @@ ${['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map(d=>`<label style="display:inli
 </div>
 </div>
 
-${isAdmin?`<div class="btn-row" style="margin-top:14px"><button class="btn btn-p" onclick="saveUpdatePolicy()">Save Update Policy</button>${inSiteContext&&upo.is_site_override?'<button class="btn btn-g" onclick="clearUpdatePolicy()">Reset to OEM Default</button>':''}</div>`:'<p style="font-size:12px;color:var(--muted);margin-top:10px">Requires Admin role.</p>'}
+${isAdmin?`<div class="btn-row" style="margin-top:14px"><button class="btn btn-p" onclick="saveUpdatePolicy()">Save Update Policy</button>${inSiteContext&&(upo.is_site_override||upo.is_override)?'<button class="btn btn-g" onclick="clearUpdatePolicy()">Reset to Inherited Default</button>':''}</div>`:'<p style="font-size:12px;color:var(--muted);margin-top:10px">Requires Admin role.</p>'}
 ${upo.updated_at?`<div style="font-size:11px;color:var(--muted);margin-top:8px">Last saved ${fmtAge(upo.updated_at)} by ${esc(upo.updated_by||'-')}</div>`:''}
 </div>
 
 <div class="card">
-<div class="card-header"><div class="card-title">Retention Policy</div>${layerChip(p.is_site_override)}</div>
-<div style="font-size:11px;color:var(--muted);margin-bottom:10px">Controls what happens to old data. Disabled by default &mdash; nothing is ever deleted or moved until an admin turns this on, mirroring how enforcement actions work elsewhere in this platform.</div>
+<div class="card-header"><div class="card-title">Telemetry Policy</div>${layerChip(tel.is_site_override||tel.is_override,tel.scope_label)}</div>
+<div style="font-size:11px;color:var(--muted);margin-bottom:12px">DNS query capture and browsing history both surface what a device (and its user) has been doing online &mdash; both are <strong>off by default</strong> and require explicit opt-in here, unlike most other settings in this platform. Review your organization's monitoring/acceptable-use policy before enabling either.</div>
+${exemptRow(tel.exempt,'tel')}
+<div style="padding:10px 0;border-bottom:1px solid var(--border)">
+<label style="display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;cursor:pointer;margin-bottom:6px">${chk('tel-dns-en',tel.dns_capture?.enabled===true)} DNS Query Capture</label>
+<div style="font-size:11px;color:var(--muted);margin-left:22px">Shows on the Timeline tab as <code>dns_query</code> events (domain queried, type, resolved IPs) &mdash; not full URLs. Enables the native Windows DNS Client Operational log on first use (a diagnostics-only change, no functional impact). Does not attribute queries to a specific application.</div>
+</div>
+<div style="padding:10px 0">
+<label style="display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;cursor:pointer;margin-bottom:6px">${chk('tel-bh-en',tel.browsing_history?.enabled===true)} Browsing History</label>
+<div style="font-size:11px;color:var(--muted);margin-left:22px;margin-bottom:8px">Full URLs, page titles, and visit counts from Chrome/Edge/Firefox across every user profile on the device, shown on its own Browsing History tab (not mixed into the Timeline). Does not capture private/incognito browsing.</div>
+<div style="margin-left:22px;max-width:280px">${numRow('tel-bh-max','Max entries per browser',tel.browsing_history?.max_entries_per_browser||500,'Oldest entries dropped first once this cap is reached.')}</div>
+</div>
+${isAdmin?`<div class="btn-row" style="margin-top:14px"><button class="btn btn-p" onclick="saveTelemetryPolicy()">Save Telemetry Policy</button>${inSiteContext&&(tel.is_site_override||tel.is_override)?'<button class="btn btn-g" onclick="clearTelemetryPolicy()">Reset to Inherited Default</button>':''}</div>`:'<p style="font-size:12px;color:var(--muted);margin-top:10px">Requires Admin role.</p>'}
+${tel.updated_at?`<div style="font-size:11px;color:var(--muted);margin-top:8px">Last saved ${fmtAge(tel.updated_at)} by ${esc(tel.updated_by||'-')}</div>`:''}
+</div>
 
+<div class="card">
+<div class="card-header"><div class="card-title">Retention Policy</div>${layerChip(p.is_site_override||p.is_override,p.scope_label)}</div>
+<div style="font-size:11px;color:var(--muted);margin-bottom:10px">Controls what happens to old data. Disabled by default &mdash; nothing is ever deleted or moved until an admin turns this on, mirroring how enforcement actions work elsewhere in this platform.${inDrillDown?' At group/device level, only the endpoint-side fields (logs/quarantine) are meaningful &mdash; cloud sweeps always run per organization.':''}</div>
+${exemptRow(p.exempt,'rp')}
 <label style="display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;cursor:pointer;margin-bottom:12px">${chk('rp-enabled',p.enabled===true)} Enable retention policy</label>
 
 <div class="grid2" style="margin-bottom:12px">
@@ -1463,11 +1757,11 @@ ${numRow('rp-interval','Auto-sweep interval (hours)',p.sweep_interval_hours||24,
 
 ${isAdmin?`<div class="btn-row" style="margin-top:14px">
 <button class="btn btn-p" onclick="saveRetention()">Save Retention Policy</button>
-<button class="btn btn-d" onclick="runRetentionNow(this)">Run Cloud Sweep Now</button>
-${inSiteContext&&p.is_site_override?'<button class="btn btn-g" onclick="clearRetention()">Reset to OEM Default</button>':''}
+${!inDrillDown?'<button class="btn btn-d" onclick="runRetentionNow(this)">Run Cloud Sweep Now</button>':''}
+${inSiteContext&&(p.is_site_override||p.is_override)?'<button class="btn btn-g" onclick="clearRetention()">Reset to Inherited Default</button>':''}
 </div>`:'<p style="font-size:12px;color:var(--muted);margin-top:10px">Requires Admin role.</p>'}
 ${p.updated_at?`<div style="font-size:11px;color:var(--muted);margin-top:8px">Last saved ${fmtAge(p.updated_at)} by ${esc(p.updated_by||'-')}</div>`:''}
-${lr?`<div style="font-size:11px;color:var(--muted);margin-top:8px">Last cloud sweep: ${fmtAge(lr.ran_at)} (${esc(lr.trigger||'-')}, ${esc(lr.status||'-')})${lrSummary?`<div style="margin-top:4px">${lrSummary}</div>`:''}</div>`:'<div style="font-size:11px;color:var(--muted);margin-top:8px">No cloud sweep has run yet.</div>'}
+${!inDrillDown?(lr?`<div style="font-size:11px;color:var(--muted);margin-top:8px">Last cloud sweep: ${fmtAge(lr.ran_at)} (${esc(lr.trigger||'-')}, ${esc(lr.status||'-')})${lrSummary?`<div style="margin-top:4px">${lrSummary}</div>`:''}</div>`:'<div style="font-size:11px;color:var(--muted);margin-top:8px">No cloud sweep has run yet.</div>'):''}
 </div>
 
 ${isOem?`<div class="card">
@@ -1522,10 +1816,22 @@ function tglRpDest(){
 }
 
 function settingsSiteQS(){
-  // Mirrors renderSettings' siteQS: only an oem_admin's explicit drill-down
-  // (_siteCtx) needs a ?site= param — a site-scoped admin's own writes are
-  // pinned to their own org by the backend regardless.
+  // Used by /api/settings only (Dashboard Settings card — org/global scope
+  // exclusively, no group/device drill-down). Only an oem_admin's explicit
+  // drill-down (_siteCtx) needs a ?site= param — a site-scoped admin's own
+  // writes are pinned to their own org by the backend regardless.
   return _user?.role==='oem_admin' && _siteCtx ? `?site=${encodeURIComponent(_siteCtx)}` : '';
+}
+
+function policyScopeQS(){
+  // Used by /api/agent-schedule, /api/retention-policy, /api/update-policy
+  // — these three support the full group/device drill-down on top of
+  // site/global. Mirrors renderSettings' own policyQS computation exactly;
+  // kept in sync so what you see is what gets saved.
+  const effectiveSite = _user?.role==='oem_admin' ? _siteCtx : (_user?.site_name||null);
+  if(_settingsHostCtx && effectiveSite)return `?site=${encodeURIComponent(effectiveSite)}&hostname=${encodeURIComponent(_settingsHostCtx)}`;
+  if(_settingsGroupCtx)return `?group_id=${encodeURIComponent(_settingsGroupCtx)}`;
+  return settingsSiteQS();
 }
 
 async function saveSets(){
@@ -1554,14 +1860,15 @@ async function saveAgentSchedule(){
     reporter_interval_minutes:parseInt(gv('ag-rep-m'))||15,
     command_executor_enabled:gc('ag-cmd'),command_executor_interval_minutes:parseInt(gv('ag-cmd-m'))||5,
   };
-  const r=await api('/api/agent-schedule'+settingsSiteQS(),{method:'PUT',body:JSON.stringify(body)});
+  if(document.getElementById('ag-exempt'))body.exempt=gc('ag-exempt');
+  const r=await api('/api/agent-schedule'+policyScopeQS(),{method:'PUT',body:JSON.stringify(body)});
   if(r.ok){alert('Agent schedule saved! Endpoint agents will pick this up within one Command Executor cycle.');renderSettings(document.getElementById('content'));}
   else{const d=await r.json().catch(()=>({detail:'Error'}));alert('Failed: '+d.detail);}
 }
 
 async function clearAgentSchedule(){
-  if(!confirm('Revert to the OEM default Agent Schedule? This organization\'s own overrides will be discarded.'))return;
-  const r=await api('/api/agent-schedule'+settingsSiteQS(),{method:'DELETE'});
+  if(!confirm('Revert to the inherited default Agent Schedule? This layer\'s own overrides will be discarded.'))return;
+  const r=await api('/api/agent-schedule'+policyScopeQS(),{method:'DELETE'});
   if(r.ok)renderSettings(document.getElementById('content'));
   else{const d=await r.json().catch(()=>({detail:'Error'}));alert('Failed: '+d.detail);}
 }
@@ -1587,14 +1894,15 @@ async function saveRetention(){
       prefix:(gv('rp-dest-prefix')||'').trim()||'retained/',
     },
   };
-  const r=await api('/api/retention-policy'+settingsSiteQS(),{method:'PUT',body:JSON.stringify(body)});
+  if(document.getElementById('rp-exempt'))body.exempt=gc('rp-exempt');
+  const r=await api('/api/retention-policy'+policyScopeQS(),{method:'PUT',body:JSON.stringify(body)});
   if(r.ok){alert('Retention policy saved.');renderSettings(document.getElementById('content'));}
   else{const d=await r.json().catch(()=>({detail:'Error'}));alert('Failed: '+d.detail);}
 }
 
 async function clearRetention(){
-  if(!confirm('Revert to the OEM default Retention Policy? This organization\'s own overrides will be discarded.'))return;
-  const r=await api('/api/retention-policy'+settingsSiteQS(),{method:'DELETE'});
+  if(!confirm('Revert to the inherited default Retention Policy? This layer\'s own overrides will be discarded.'))return;
+  const r=await api('/api/retention-policy'+policyScopeQS(),{method:'DELETE'});
   if(r.ok)renderSettings(document.getElementById('content'));
   else{const d=await r.json().catch(()=>({detail:'Error'}));alert('Failed: '+d.detail);}
 }
@@ -1620,14 +1928,35 @@ async function saveUpdatePolicy(){
       allow_list:(gv('up-app-list')||'').split(',').map(s=>s.trim()).filter(Boolean),
     },
   };
-  const r=await api('/api/update-policy'+settingsSiteQS(),{method:'PUT',body:JSON.stringify(body)});
+  if(document.getElementById('up-exempt'))body.exempt=gc('up-exempt');
+  const r=await api('/api/update-policy'+policyScopeQS(),{method:'PUT',body:JSON.stringify(body)});
   if(r.ok){alert('Update policy saved.');renderSettings(document.getElementById('content'));}
   else{const d=await r.json().catch(()=>({detail:'Error'}));alert('Failed: '+d.detail);}
 }
 
 async function clearUpdatePolicy(){
-  if(!confirm('Revert to the OEM default Update Policy? This organization\'s own overrides will be discarded.'))return;
-  const r=await api('/api/update-policy'+settingsSiteQS(),{method:'DELETE'});
+  if(!confirm('Revert to the inherited default Update Policy? This layer\'s own overrides will be discarded.'))return;
+  const r=await api('/api/update-policy'+policyScopeQS(),{method:'DELETE'});
+  if(r.ok)renderSettings(document.getElementById('content'));
+  else{const d=await r.json().catch(()=>({detail:'Error'}));alert('Failed: '+d.detail);}
+}
+
+async function saveTelemetryPolicy(){
+  const gv=id=>document.getElementById(id)?.value;
+  const gc=id=>!!document.getElementById(id)?.checked;
+  const body={
+    dns_capture:{enabled:gc('tel-dns-en')},
+    browsing_history:{enabled:gc('tel-bh-en'),max_entries_per_browser:parseInt(gv('tel-bh-max'))||500},
+  };
+  if(document.getElementById('tel-exempt'))body.exempt=gc('tel-exempt');
+  const r=await api('/api/telemetry-policy'+policyScopeQS(),{method:'PUT',body:JSON.stringify(body)});
+  if(r.ok){alert('Telemetry policy saved.');renderSettings(document.getElementById('content'));}
+  else{const d=await r.json().catch(()=>({detail:'Error'}));alert('Failed: '+d.detail);}
+}
+
+async function clearTelemetryPolicy(){
+  if(!confirm('Revert to the inherited default Telemetry Policy? This layer\'s own overrides will be discarded.'))return;
+  const r=await api('/api/telemetry-policy'+policyScopeQS(),{method:'DELETE'});
   if(r.ok)renderSettings(document.getElementById('content'));
   else{const d=await r.json().catch(()=>({detail:'Error'}));alert('Failed: '+d.detail);}
 }

@@ -191,6 +191,15 @@ DEFAULT_UPDATE_POLICY = {
         "allow_list": [],   # winget package IDs explicitly approved for auto-update — nothing updates just because winget offers it
     },
 }
+TELEMETRY_POLICY_KEY = "config/telemetry_policy.json"
+# Both default OFF — unlike Update Policy above, DNS query capture and
+# browsing history both surface what a device (and by extension its
+# user) has been doing online, so this is opt-in per organization, not
+# opt-out. Mirrors agent.py's DEFAULT_TELEMETRY_POLICY exactly.
+DEFAULT_TELEMETRY_POLICY = {
+    "dns_capture":      {"enabled": False},
+    "browsing_history":  {"enabled": False, "max_entries_per_browser": 500},
+}
 ALLOWED_ACTIONS = [
     "alert_only", "kill_process", "isolate_host",
     "block_network", "collect_forensics",
@@ -542,6 +551,28 @@ def fetch_inventory() -> list:
             devices.append(json.loads(client.get_object(Bucket=ORACLE_BUCKET, Key=obj["Key"])["Body"].read()))
         except Exception:
             pass
+
+    # Classify every device (device_type/department) and resolve group
+    # membership, one Oracle read per distinct site rather than per
+    # device — this is what powers the Inventory page's OS/group filters
+    # and every policy's targeting.
+    meta_by_site: Dict[str, dict] = {}
+    groups_by_site: Dict[str, list] = {}
+    for d in devices:
+        site_name = d.get("site_name")
+        hostname = d.get("hostname")
+        if not site_name or not hostname:
+            continue
+        if site_name not in meta_by_site:
+            meta_by_site[site_name] = _load_device_meta(site_name)
+            groups_by_site[site_name] = _load_groups(site_name)
+        cls = get_device_classification(site_name, hostname, d.get("os", ""), meta_by_site[site_name])
+        matched = device_groups_for(site_name, hostname, cls["device_type"], cls["department"],
+                                     d.get("os", ""), groups_by_site[site_name])
+        d["device_type"] = cls["device_type"]
+        d["department"] = cls["department"]
+        d["groups"] = [{"id": g["id"], "name": g["name"]} for g in matched]
+
     cache_set("inventory", devices)
     return devices
 
@@ -787,7 +818,7 @@ def fetch_device_detail(site_name: str, hostname: str) -> dict:
         return {}
     device = s3_get(client, f"{DEVICES_PREFIX}{site_name}/{hostname}.json") or {}
     ALL_MODULES = ["defender", "dns", "threat", "usb", "process_monitor",
-                   "playbook_alerts", "timeline", "enforcement", "updates"]
+                   "playbook_alerts", "timeline", "enforcement", "updates", "browsing_history"]
     modules = {}
     for module in ALL_MODULES:
         key = f"{REPORTS_PREFIX}{site_name}/{hostname}/{module}/latest.json"
@@ -827,6 +858,10 @@ def fetch_device_detail(site_name: str, hostname: str) -> dict:
                 "threat_name":  evt.get("threat_name", ""),
                 "severity":     evt.get("severity", ""),
                 "action":       evt.get("action", ""),
+                "query_name":   evt.get("query_name", ""),
+                "query_type":   evt.get("query_type", ""),
+                "query_results": evt.get("query_results", ""),
+                "query_status": evt.get("query_status", ""),
             })
     for module in ["usb", "process_monitor"]:
         if module in modules:
@@ -867,7 +902,12 @@ def fetch_device_detail(site_name: str, hostname: str) -> dict:
             pass
     alerts.sort(key=lambda x: x.get("created_at") or "", reverse=True)
 
-    return {"device": device, "modules": modules, "apps": apps, "timeline": timeline, "alerts": alerts}
+    browsing_history = []
+    if "browsing_history" in modules:
+        browsing_history = (modules["browsing_history"].get("raw") or {}).get("entries", [])
+
+    return {"device": device, "modules": modules, "apps": apps, "timeline": timeline,
+            "alerts": alerts, "browsing_history": browsing_history}
 
 
 def _site_override_key(base_key: str, site_name: str) -> str:
@@ -877,6 +917,180 @@ def _site_override_key(base_key: str, site_name: str) -> str:
     site's override always lives right alongside its global default."""
     stem = base_key[:-5] if base_key.endswith(".json") else base_key
     return f"{stem}/sites/{site_name}.json"
+
+
+def _group_override_key(base_key: str, group_id: str) -> str:
+    """Same idea as _site_override_key, one layer deeper: a group's
+    override of a given policy — 'config/agent_schedule/groups/{group_id}.json'.
+    Group IDs are unique platform-wide (see create_group), so this needs
+    no site component."""
+    stem = base_key[:-5] if base_key.endswith(".json") else base_key
+    return f"{stem}/groups/{group_id}.json"
+
+
+def _host_override_key(base_key: str, site_name: str, hostname: str) -> str:
+    """Deepest layer: one specific device's override/exemption for a given
+    policy — 'config/agent_schedule/hosts/{site}/{hostname}.json'. Needs
+    both site and hostname since hostnames aren't unique across organizations."""
+    stem = base_key[:-5] if base_key.endswith(".json") else base_key
+    return f"{stem}/hosts/{site_name}/{hostname}.json"
+
+
+# ── Asset Groups & Device Classification ───────────────────────────────────────
+# Every device is classified along three dimensions, all usable as targeting
+# criteria for Rules, Agent Schedule, Retention, and Update Policy:
+#   1. device_type   — "workstation" | "server" | "byod". Auto-classified
+#                       from the OS string; "byod" can never be inferred, so
+#                       it's always a manual override (see device_meta below).
+#   2. department     — free-text, admin-assigned per device.
+#   3. custom groups  — admin-named collections, either manual membership
+#                       (explicit hostname list) or automatic membership
+#                       (a match rule against device_type/os/department) —
+#                       see _device_matches_group.
+#
+# Every policy that supports targeting resolves in this fixed order, each
+# layer only overriding the fields it explicitly set (never wiping out
+# fields a lower layer already established):
+#   OEM-global -> site override -> group override(s), lowest priority first
+#   so the highest-priority matching group wins ties -> hostname override
+# An "exempt": true at any layer means "this device sits outside this
+# policy's active behavior entirely" — see resolve_scoped_policy.
+GROUPS_KEY_TMPL       = "config/groups/sites/{site}.json"
+DEVICE_META_KEY_TMPL  = "config/device_meta/sites/{site}.json"
+
+
+def classify_device_type(os_string: str) -> str:
+    """Auto-classification from the OS string alone — BYOD is never
+    inferred this way, only ever set via a manual device_meta override."""
+    s = (os_string or "").lower()
+    if "server" in s:
+        return "server"
+    return "workstation"
+
+
+def _load_groups(site_name: str) -> list:
+    client = s3()
+    if not client:
+        return []
+    return (s3_get(client, GROUPS_KEY_TMPL.format(site=site_name)) or {}).get("groups", [])
+
+
+def _save_groups(site_name: str, groups: list):
+    client = s3(commander=True)
+    if client:
+        s3_put(client, GROUPS_KEY_TMPL.format(site=site_name), {"groups": groups})
+
+
+def _load_device_meta(site_name: str) -> dict:
+    """{hostname: {device_type_override, department, notes}}"""
+    client = s3()
+    if not client:
+        return {}
+    return (s3_get(client, DEVICE_META_KEY_TMPL.format(site=site_name)) or {}).get("devices", {})
+
+
+def _save_device_meta(site_name: str, meta: dict):
+    client = s3(commander=True)
+    if client:
+        s3_put(client, DEVICE_META_KEY_TMPL.format(site=site_name), {"devices": meta})
+
+
+def get_device_classification(site_name: str, hostname: str, os_string: str,
+                               device_meta: Optional[dict] = None) -> dict:
+    """Resolves the three built-in dimensions for one device. device_meta
+    can be passed in (already loaded) to avoid a repeat Oracle read when
+    classifying many devices at once — see fetch_inventory."""
+    meta = (device_meta if device_meta is not None else _load_device_meta(site_name)).get(hostname, {})
+    device_type = meta.get("device_type_override") or classify_device_type(os_string)
+    return {
+        "device_type": device_type,
+        "department":  meta.get("department") or "",
+        "notes":       meta.get("notes") or "",
+    }
+
+
+def _device_matches_group(hostname: str, device_type: str, department: str, os_string: str, group: dict) -> bool:
+    """A device is a member of a group either by explicit hostname listing
+    (manual groups) or by matching auto_criteria (auto groups) — a group
+    can define both and membership is the union of the two."""
+    if hostname in (group.get("member_hostnames") or []):
+        return True
+    crit = group.get("auto_criteria") or {}
+    if not crit:
+        return False
+    if crit.get("device_type") and crit["device_type"] != device_type:
+        return False
+    if crit.get("department") and crit["department"].lower() != (department or "").lower():
+        return False
+    if crit.get("os_contains") and crit["os_contains"].lower() not in (os_string or "").lower():
+        return False
+    # A criteria dict with at least one condition, all of which passed (or
+    # were unset), counts as a match.
+    return any(k in crit for k in ("device_type", "department", "os_contains"))
+
+
+def device_groups_for(site_name: str, hostname: str, device_type: str, department: str,
+                       os_string: str, groups: Optional[list] = None) -> list:
+    """Every group (in this site) the device belongs to, sorted ascending
+    by priority — so callers layering overrides in this order naturally
+    let the HIGHEST-priority matching group win when two groups both
+    override the same field."""
+    groups = groups if groups is not None else _load_groups(site_name)
+    matched = [g for g in groups if _device_matches_group(hostname, device_type, department, os_string, g)]
+    matched.sort(key=lambda g: g.get("priority", 0))
+    return matched
+
+
+def resolve_scoped_policy(get_effective_fn, merge_fn, base_key: str, defaults: dict,
+                           site_name: Optional[str], hostname: Optional[str] = None,
+                           os_string: str = "", groups: Optional[list] = None,
+                           device_meta: Optional[dict] = None) -> dict:
+    """Generic 4-layer resolution used identically by agent-schedule,
+    retention-policy, and update-policy's per-device views: OEM-global ->
+    site override -> matching group overrides (lowest priority first) ->
+    hostname override. merge_fn(target_dict, source_doc) applies one
+    doc's fields onto the accumulating result exactly the way each
+    policy's own merge logic already works (flat dict.update for
+    schedule, nested-section update for retention/updates) — passed in
+    rather than reimplemented here so each policy's existing, tested
+    merge semantics don't have to be duplicated or diverge.
+    Returns (merged, exempt, layers_applied) where layers_applied is a
+    list of human-readable strings for the "why does this device have
+    this value" trail shown in the UI."""
+    client = s3()
+    merged = json.loads(json.dumps(defaults))
+    exempt = False
+    layers = []
+
+    def _apply(doc: dict, label: str):
+        nonlocal exempt
+        if not doc:
+            return
+        if doc.get("exempt") is True:
+            exempt = True
+        merge_fn(merged, doc)
+        layers.append(label)
+
+    global_doc = (s3_get(client, base_key) or {}) if client else {}
+    _apply(global_doc, "OEM Default")
+
+    if site_name:
+        site_doc = (s3_get(client, _site_override_key(base_key, site_name)) or {}) if client else {}
+        _apply(site_doc, f"Site: {site_name}")
+
+        if hostname:
+            meta = device_meta if device_meta is not None else _load_device_meta(site_name)
+            cls = get_device_classification(site_name, hostname, os_string, meta)
+            matched_groups = device_groups_for(site_name, hostname, cls["device_type"], cls["department"],
+                                                os_string, groups)
+            for g in matched_groups:
+                group_doc = (s3_get(client, _group_override_key(base_key, g["id"])) or {}) if client else {}
+                _apply(group_doc, f"Group: {g['name']}")
+
+            host_doc = (s3_get(client, _host_override_key(base_key, site_name, hostname)) or {}) if client else {}
+            _apply(host_doc, f"Device: {hostname}")
+
+    return {"merged": merged, "exempt": exempt, "layers_applied": layers}
 
 
 def _get_settings(site_name: Optional[str] = None) -> dict:
@@ -946,7 +1160,37 @@ def _get_update_policy(site_name: Optional[str] = None) -> dict:
     return merged
 
 
-def _get_ai_settings(redact: bool = True) -> dict:
+def _merge_telemetry_policy_doc(merged: dict, doc: dict):
+    """Applies one telemetry-policy JSON doc onto an in-progress merged
+    dict, in place — one section at a time. Shared by the layered getter
+    and the group/host raw-doc views."""
+    for section in ("dns_capture", "browsing_history"):
+        if isinstance(doc.get(section), dict):
+            merged[section].update(doc[section])
+
+
+def _get_telemetry_policy(site_name: Optional[str] = None) -> dict:
+    """Merges DEFAULT_TELEMETRY_POLICY with the OEM-global doc, then — if
+    site_name is given — that site's own override doc on top, same
+    layering as Update Policy. Endpoint agents read the raw Oracle
+    objects directly (see agent.py's TelemetryPolicyStore); this function
+    only backs the dashboard UI."""
+    client = s3()
+    global_doc = (s3_get(client, TELEMETRY_POLICY_KEY) or {}) if client else {}
+    merged = json.loads(json.dumps(DEFAULT_TELEMETRY_POLICY))  # deep copy
+    _merge_telemetry_policy_doc(merged, global_doc)
+    site_doc = {}
+    if site_name and client:
+        site_doc = s3_get(client, _site_override_key(TELEMETRY_POLICY_KEY, site_name)) or {}
+        _merge_telemetry_policy_doc(merged, site_doc)
+    src = site_doc or global_doc
+    merged["updated_at"] = src.get("updated_at")
+    merged["updated_by"] = src.get("updated_by")
+    merged["is_site_override"] = bool(site_doc)
+    return merged
+
+
+
     """Merges DEFAULT_AI_SETTINGS with whatever's saved to Oracle. With
     redact=True (the GET-endpoint default) api_key is stripped and replaced
     with a has_api_key flag, same write-only/sticky pattern as the
@@ -1513,6 +1757,133 @@ async def update_organization(site_name: str, request: Request, user=Depends(req
     org["updated_at"] = datetime.datetime.utcnow().isoformat()
     _save_orgs(orgs)
     return JSONResponse(org)
+
+
+# ── Asset Groups & Device Metadata ─────────────────────────────────────────────
+@app.get("/api/groups")
+async def list_groups(request: Request, site: str):
+    user = await get_user(request)
+    if not user:
+        raise HTTPException(401, "Authentication required")
+    _enforce_site(user, site, what="this site's groups")
+    return JSONResponse({"groups": _load_groups(site)})
+
+
+@app.post("/api/groups")
+async def create_group(request: Request, user=Depends(require_perm("settings"))):
+    body = await request.json()
+    site = body.get("site_name")
+    if not site:
+        raise HTTPException(400, "site_name required")
+    _enforce_site(user, site, what="this site's groups")
+    name = (body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(400, "name required")
+    auto_criteria = body.get("auto_criteria") or None
+    if auto_criteria is not None and not isinstance(auto_criteria, dict):
+        raise HTTPException(400, "auto_criteria must be an object or null")
+    if auto_criteria and auto_criteria.get("device_type") not in (None, "workstation", "server", "byod"):
+        raise HTTPException(400, "auto_criteria.device_type must be workstation, server, or byod")
+
+    groups = _load_groups(site)
+    group = {
+        "id":               f"grp_{uuid.uuid4().hex[:10]}",
+        "site_name":        site,
+        "name":             name,
+        "priority":         int(body.get("priority") or 0),
+        "member_hostnames": [str(h).strip() for h in (body.get("member_hostnames") or []) if str(h).strip()],
+        "auto_criteria":    auto_criteria,
+        "created_at":       datetime.datetime.utcnow().isoformat(),
+        "created_by":       user["username"],
+    }
+    groups.append(group)
+    _save_groups(site, groups)
+    return JSONResponse(group, status_code=201)
+
+
+@app.put("/api/groups/{group_id}")
+async def update_group(group_id: str, request: Request, user=Depends(require_perm("settings"))):
+    body = await request.json()
+    site = body.get("site_name")
+    if not site:
+        raise HTTPException(400, "site_name required")
+    _enforce_site(user, site, what="this site's groups")
+    groups = _load_groups(site)
+    group = next((g for g in groups if g["id"] == group_id), None)
+    if not group:
+        raise HTTPException(404, f"Group '{group_id}' not found")
+    if "name" in body:
+        name = (body["name"] or "").strip()
+        if not name:
+            raise HTTPException(400, "name cannot be blank")
+        group["name"] = name
+    if "priority" in body:
+        try:
+            group["priority"] = int(body["priority"])
+        except (TypeError, ValueError):
+            raise HTTPException(400, "priority must be a whole number")
+    if "member_hostnames" in body:
+        group["member_hostnames"] = [str(h).strip() for h in (body["member_hostnames"] or []) if str(h).strip()]
+    if "auto_criteria" in body:
+        ac = body["auto_criteria"]
+        if ac is not None and not isinstance(ac, dict):
+            raise HTTPException(400, "auto_criteria must be an object or null")
+        group["auto_criteria"] = ac or None
+    group["updated_at"] = datetime.datetime.utcnow().isoformat()
+    _save_groups(site, groups)
+    return JSONResponse(group)
+
+
+@app.delete("/api/groups/{group_id}")
+async def delete_group(group_id: str, site: str, user=Depends(require_perm("settings"))):
+    _enforce_site(user, site, what="this site's groups")
+    groups = _load_groups(site)
+    before = len(groups)
+    groups = [g for g in groups if g["id"] != group_id]
+    if len(groups) == before:
+        raise HTTPException(404, f"Group '{group_id}' not found")
+    _save_groups(site, groups)
+    # Best-effort cleanup of any policy overrides that pointed at this
+    # group — an orphaned override doc would otherwise sit in Oracle
+    # forever, invisible and unreachable from the UI.
+    client = s3(commander=True)
+    if client:
+        for base in (AGENT_SCHEDULE_KEY, RETENTION_POLICY_KEY, UPDATE_POLICY_KEY):
+            try:
+                client.delete_object(Bucket=ORACLE_BUCKET, Key=_group_override_key(base, group_id))
+            except Exception:
+                pass
+    return JSONResponse({"status": "deleted", "group_id": group_id})
+
+
+@app.get("/api/device-meta")
+async def get_device_meta_all(request: Request, site: str):
+    user = await get_user(request)
+    if not user:
+        raise HTTPException(401, "Authentication required")
+    _enforce_site(user, site, what="this site's device metadata")
+    return JSONResponse({"devices": _load_device_meta(site)})
+
+
+@app.put("/api/device-meta/{hostname}")
+async def update_device_meta(hostname: str, request: Request, site: str,
+                              user=Depends(require_perm("settings"))):
+    _enforce_site(user, site, what="this device's metadata")
+    body = await request.json()
+    meta = _load_device_meta(site)
+    entry = meta.get(hostname, {})
+    if "device_type_override" in body:
+        v = body["device_type_override"]
+        if v not in (None, "", "workstation", "server", "byod"):
+            raise HTTPException(400, "device_type_override must be workstation, server, byod, or null")
+        entry["device_type_override"] = v or None
+    if "department" in body:
+        entry["department"] = (body["department"] or "").strip()
+    if "notes" in body:
+        entry["notes"] = (body["notes"] or "").strip()
+    meta[hostname] = entry
+    _save_device_meta(site, meta)
+    return JSONResponse({hostname: entry})
 
 
 # ── Data endpoints ────────────────────────────────────────────────────────────
@@ -2178,74 +2549,165 @@ async def set_machine_enforcement(site_name: str, hostname: str, request: Reques
     return JSONResponse({"status": "ok", "scope": "machine", "hostname": hostname})
 
 
-def _enforce_rules_scope(user: dict, scope: str, site: Optional[str], write: bool = False):
+def _rule_key(scope: str, site: Optional[str] = None, hostname: Optional[str] = None,
+              group_id: Optional[str] = None) -> str:
+    if scope == "global":
+        return f"{RULES_PREFIX}global/rules.json"
+    if scope == "site":
+        return f"{RULES_PREFIX}sites/{site}/rules.json"
+    if scope == "group":
+        return f"{RULES_PREFIX}groups/{group_id}/rules.json"
+    return f"{RULES_PREFIX}machines/{site}/{hostname}/rules.json"
+
+
+def _enforce_rules_scope(user: dict, scope: str, site: Optional[str], write: bool = False,
+                          group_id: Optional[str] = None) -> Optional[str]:
     """Global rules are OEM policy — only an oem_admin may create/edit/
     delete them (read is fine for everyone, so site-admins can see what
-    baseline applies to them). Site/machine-scoped rules are restricted to
-    the caller's own site, exactly like every other layered config."""
+    baseline applies to them). Site/machine/group-scoped rules are
+    restricted to the caller's own site, exactly like every other layered
+    config. Returns the resolved site_name (needed for a group scope,
+    where the caller may not have passed ?site= explicitly)."""
     caller_scope = _scope_site(user)
+    if scope == "group":
+        found_site, found_group = _find_group_site(group_id, site, caller_scope)
+        if not found_group:
+            raise HTTPException(404, f"Group '{group_id}' not found")
+        if caller_scope is not None and found_site != caller_scope:
+            raise HTTPException(403, f"'{user['username']}' is restricted to site '{caller_scope}'")
+        return found_site
     if caller_scope is None:
-        return
+        return site
     if scope == "global":
         if write:
             raise HTTPException(403, "Only an OEM admin can modify global detection rules")
-        return
+        return site
     if site != caller_scope:
         raise HTTPException(403, f"'{user['username']}' is restricted to site '{caller_scope}'")
+    return site
+
+
+# A rule's exemptions keep it from firing for specific devices even though
+# its conditions otherwise match — resolved server-side, at push time (see
+# _save_rules), so the endpoint's playbook_engine.py never needs to know
+# about groups/exemptions itself; it just receives an already-filtered
+# rule set. Every rule (regardless of its own scope: global/site/group/
+# machine) can carry exemptions.
+def _rule_applies_to_device(rule: dict, hostname: str, device_type: str,
+                             os_string: str, member_group_ids: set) -> bool:
+    ex = rule.get("exemptions") or {}
+    if hostname in (ex.get("hostnames") or []):
+        return False
+    if device_type in (ex.get("device_types") or []):
+        return False
+    if member_group_ids & set(ex.get("groups") or []):
+        return False
+    if any((oc or "").lower() in (os_string or "").lower() for oc in (ex.get("os_contains") or [])):
+        return False
+    return True
 
 
 @app.get("/api/rules")
 async def get_rules(request: Request, scope: str = "global",
-                     site: Optional[str] = None, hostname: Optional[str] = None):
+                     site: Optional[str] = None, hostname: Optional[str] = None,
+                     group_id: Optional[str] = None):
     user = await get_user(request)
     if not user:
         raise HTTPException(401, "Authentication required")
-    _enforce_rules_scope(user, scope, site, write=False)
+    _enforce_rules_scope(user, scope, site, write=False, group_id=group_id)
     client = s3()
     if not client:
         return JSONResponse({"rules": [], "scope": scope})
-    if scope == "global":
-        key = f"{RULES_PREFIX}global/rules.json"
-    elif scope == "site":
-        key = f"{RULES_PREFIX}sites/{site}/rules.json"
-    else:
-        key = f"{RULES_PREFIX}machines/{site}/{hostname}/rules.json"
+    key = _rule_key(scope, site, hostname, group_id)
     data = s3_get(client, key) or {}
     return JSONResponse({"rules": data.get("rules", []), "scope": scope})
 
 
-def _save_rules(client, rules, scope, site=None, hostname=None):
-    if scope == "global":
-        key = f"{RULES_PREFIX}global/rules.json"
-    elif scope == "site":
-        key = f"{RULES_PREFIX}sites/{site}/rules.json"
-    else:
-        key = f"{RULES_PREFIX}machines/{site}/{hostname}/rules.json"
+def _save_rules(client, rules, scope, site=None, hostname=None, group_id=None):
+    key = _rule_key(scope, site, hostname, group_id)
     s3_put(client, key, {"rules": rules, "updated_at": datetime.datetime.utcnow().isoformat()})
-    # Push to affected machines
+
+    # Push to every affected device — global rules go to everyone; site
+    # rules to that org; group rules to every device currently matching
+    # that group; machine rules only ever affected that one device. Every
+    # push recomputes the FULL merged+exemption-filtered set for that
+    # device (global -> site -> matching groups -> machine, then drops
+    # any rule that exempts this device) so playbook_engine.py on the
+    # endpoint never has to understand groups or exemptions itself.
+    global_r = (s3_get(client, f"{RULES_PREFIX}global/rules.json") or {}).get("rules", [])
+    site_cache: Dict[str, list] = {}
+    meta_cache: Dict[str, dict] = {}
+    groups_cache: Dict[str, list] = {}
+
     for device in fetch_inventory():
-        if scope == "global" or \
-           (scope == "site" and device["site_name"] == site) or \
-           (scope == "machine" and device["site_name"] == site and device["hostname"] == hostname):
-            try:
-                merged_key = f"{RULES_PREFIX}global/rules.json"
-                global_r = (s3_get(client, merged_key) or {}).get("rules", [])
-                merged = {r["id"]: r for r in global_r}
-                if scope != "global":
-                    site_r = (s3_get(client, f"{RULES_PREFIX}sites/{device['site_name']}/rules.json") or {}).get("rules", [])
-                    merged.update({r["id"]: r for r in site_r})
-                s3_put(client, f"commands/{device['site_name']}/{device['hostname']}/pending.json",
-                       {"command": "update_rules", "rules": list(merged.values()),
-                        "issued_at": datetime.datetime.utcnow().isoformat()})
-            except Exception:
-                pass
+        d_site, d_host = device["site_name"], device["hostname"]
+        affected = (
+            scope == "global" or
+            (scope == "site" and d_site == site) or
+            (scope == "machine" and d_site == site and d_host == hostname)
+        )
+        if scope == "group":
+            if d_site not in groups_cache:
+                groups_cache[d_site] = _load_groups(d_site)
+                meta_cache[d_site] = _load_device_meta(d_site)
+            cls = get_device_classification(d_site, d_host, device.get("os", ""), meta_cache[d_site])
+            matched = device_groups_for(d_site, d_host, cls["device_type"], cls["department"],
+                                         device.get("os", ""), groups_cache[d_site])
+            if any(g["id"] == group_id for g in matched):
+                affected = True
+        if not affected:
+            continue
+        try:
+            if d_site not in site_cache:
+                site_cache[d_site] = (s3_get(client, f"{RULES_PREFIX}sites/{d_site}/rules.json") or {}).get("rules", [])
+            if d_site not in meta_cache:
+                meta_cache[d_site] = _load_device_meta(d_site)
+            if d_site not in groups_cache:
+                groups_cache[d_site] = _load_groups(d_site)
+
+            merged = {r["id"]: r for r in global_r}
+            merged.update({r["id"]: r for r in site_cache[d_site]})
+            cls = get_device_classification(d_site, d_host, device.get("os", ""), meta_cache[d_site])
+            matched_groups = device_groups_for(d_site, d_host, cls["device_type"], cls["department"],
+                                                device.get("os", ""), groups_cache[d_site])
+            for g in matched_groups:
+                group_rules = (s3_get(client, f"{RULES_PREFIX}groups/{g['id']}/rules.json") or {}).get("rules", [])
+                merged.update({r["id"]: r for r in group_rules})
+            machine_rules = (s3_get(client, f"{RULES_PREFIX}machines/{d_site}/{d_host}/rules.json") or {}).get("rules", [])
+            merged.update({r["id"]: r for r in machine_rules})
+
+            member_group_ids = {g["id"] for g in matched_groups}
+            final_rules = [r for r in merged.values()
+                           if _rule_applies_to_device(r, d_host, cls["device_type"], device.get("os", ""), member_group_ids)]
+
+            s3_put(client, f"commands/{d_site}/{d_host}/pending.json",
+                   {"command": "update_rules", "rules": final_rules,
+                    "issued_at": datetime.datetime.utcnow().isoformat()})
+        except Exception:
+            pass
+
+
+def _validate_exemptions(body: dict) -> Optional[dict]:
+    if "exemptions" not in body:
+        return None
+    ex = body["exemptions"] or {}
+    if not isinstance(ex, dict):
+        raise HTTPException(400, "exemptions must be an object")
+    valid_types = {"workstation", "server", "byod"}
+    device_types = [t for t in (ex.get("device_types") or []) if t in valid_types]
+    return {
+        "hostnames":    [str(h).strip() for h in (ex.get("hostnames") or []) if str(h).strip()],
+        "groups":       [str(g).strip() for g in (ex.get("groups") or []) if str(g).strip()],
+        "device_types": device_types,
+        "os_contains":  [str(o).strip() for o in (ex.get("os_contains") or []) if str(o).strip()],
+    }
 
 
 @app.post("/api/rules")
 async def create_rule(request: Request, user=Depends(require_perm("commands")),
                        scope: str = "global", site: Optional[str] = None,
-                       hostname: Optional[str] = None):
-    _enforce_rules_scope(user, scope, site, write=True)
+                       hostname: Optional[str] = None, group_id: Optional[str] = None):
+    resolved_site = _enforce_rules_scope(user, scope, site, write=True, group_id=group_id)
     body = await request.json()
     bad  = [a for a in body.get("actions", []) if a not in ALLOWED_ACTIONS]
     if bad:
@@ -2253,12 +2715,7 @@ async def create_rule(request: Request, user=Depends(require_perm("commands")),
     client = s3(commander=True)
     if not client:
         raise HTTPException(503, "Commander not configured")
-    if scope == "global":
-        key = f"{RULES_PREFIX}global/rules.json"
-    elif scope == "site":
-        key = f"{RULES_PREFIX}sites/{site}/rules.json"
-    else:
-        key = f"{RULES_PREFIX}machines/{site}/{hostname}/rules.json"
+    key = _rule_key(scope, resolved_site or site, hostname, group_id)
     rules = (s3_get(client, key) or {}).get("rules", [])
     new_rule = {
         "id":           str(uuid.uuid4())[:8],
@@ -2269,12 +2726,16 @@ async def create_rule(request: Request, user=Depends(require_perm("commands")),
         "enabled":      body.get("enabled", True),
         "conditions":   body.get("conditions", {}),
         "actions":      body.get("actions", ["alert_only"]),
+        # Exemptions keep this rule from firing for specific devices even
+        # though its conditions otherwise match — see _rule_applies_to_device.
+        "exemptions":   _validate_exemptions(body) or
+                         {"hostnames": [], "groups": [], "device_types": [], "os_contains": []},
         "created_at":   datetime.datetime.utcnow().isoformat(),
         "updated_at":   datetime.datetime.utcnow().isoformat(),
         "created_by":   user["username"],
     }
     rules.append(new_rule)
-    _save_rules(client, rules, scope, site, hostname)
+    _save_rules(client, rules, scope, resolved_site or site, hostname, group_id)
     return JSONResponse(new_rule, status_code=201)
 
 
@@ -2282,18 +2743,13 @@ async def create_rule(request: Request, user=Depends(require_perm("commands")),
 async def update_rule(rule_id: str, request: Request,
                        user=Depends(require_perm("commands")),
                        scope: str = "global", site: Optional[str] = None,
-                       hostname: Optional[str] = None):
-    _enforce_rules_scope(user, scope, site, write=True)
+                       hostname: Optional[str] = None, group_id: Optional[str] = None):
+    resolved_site = _enforce_rules_scope(user, scope, site, write=True, group_id=group_id)
     body = await request.json()
     client = s3(commander=True)
     if not client:
         raise HTTPException(503, "Commander not configured")
-    if scope == "global":
-        key = f"{RULES_PREFIX}global/rules.json"
-    elif scope == "site":
-        key = f"{RULES_PREFIX}sites/{site}/rules.json"
-    else:
-        key = f"{RULES_PREFIX}machines/{site}/{hostname}/rules.json"
+    key = _rule_key(scope, resolved_site or site, hostname, group_id)
     rules = (s3_get(client, key) or {}).get("rules", [])
     updated = None
     for r in rules:
@@ -2301,35 +2757,33 @@ async def update_rule(rule_id: str, request: Request,
             for k in {"name","description","severity","mitre_tactic","enabled","conditions","actions"}:
                 if k in body:
                     r[k] = body[k]
+            new_ex = _validate_exemptions(body)
+            if new_ex is not None:
+                r["exemptions"] = new_ex
             r["updated_at"] = datetime.datetime.utcnow().isoformat()
             updated = r
             break
     if not updated:
         raise HTTPException(404, f"Rule {rule_id} not found")
-    _save_rules(client, rules, scope, site, hostname)
+    _save_rules(client, rules, scope, resolved_site or site, hostname, group_id)
     return JSONResponse(updated)
 
 
 @app.delete("/api/rules/{rule_id}")
 async def delete_rule(rule_id: str, user=Depends(require_perm("commands")),
                        scope: str = "global", site: Optional[str] = None,
-                       hostname: Optional[str] = None):
-    _enforce_rules_scope(user, scope, site, write=True)
+                       hostname: Optional[str] = None, group_id: Optional[str] = None):
+    resolved_site = _enforce_rules_scope(user, scope, site, write=True, group_id=group_id)
     client = s3(commander=True)
     if not client:
         raise HTTPException(503, "Commander not configured")
-    if scope == "global":
-        key = f"{RULES_PREFIX}global/rules.json"
-    elif scope == "site":
-        key = f"{RULES_PREFIX}sites/{site}/rules.json"
-    else:
-        key = f"{RULES_PREFIX}machines/{site}/{hostname}/rules.json"
+    key = _rule_key(scope, resolved_site or site, hostname, group_id)
     rules = (s3_get(client, key) or {}).get("rules", [])
     before = len(rules)
     rules  = [r for r in rules if r["id"] != rule_id]
     if len(rules) == before:
         raise HTTPException(404, f"Rule {rule_id} not found")
-    _save_rules(client, rules, scope, site, hostname)
+    _save_rules(client, rules, scope, resolved_site or site, hostname, group_id)
     return JSONResponse({"status": "deleted", "rule_id": rule_id})
 
 
@@ -2486,6 +2940,54 @@ def _resolve_target_site(user: dict, query_site: Optional[str]) -> Optional[str]
     return query_site if scope is None else scope
 
 
+def _find_group_site(group_id: str, hint_site: Optional[str], caller_scope: Optional[str]) -> tuple:
+    """Locates which organization owns a group_id, so callers can enforce
+    site scope and label the layer. Checks the hinted/caller's own site
+    first (the overwhelming common case — one lookup), only falling back
+    to scanning every registered org (oem_admin targeting another org's
+    group without specifying ?site=)."""
+    candidate_sites = [s for s in (hint_site, caller_scope) if s]
+    if not candidate_sites:
+        candidate_sites = [o["site_name"] for o in _load_orgs()]
+    for s in candidate_sites:
+        for g in _load_groups(s):
+            if g["id"] == group_id:
+                return s, g
+    # Fallback: hint/caller didn't have it — full scan (oem_admin only path
+    # in practice, since a site-scoped caller's candidate list already
+    # covers every group they could legitimately reference).
+    for o in _load_orgs():
+        if o["site_name"] in candidate_sites:
+            continue
+        for g in _load_groups(o["site_name"]):
+            if g["id"] == group_id:
+                return o["site_name"], g
+    return None, None
+
+
+def _resolve_policy_target(user: dict, base_key: str, site: Optional[str],
+                            group_id: Optional[str], hostname: Optional[str]) -> tuple:
+    """Determines which of the four policy layers (global/site/group/host)
+    a GET/PUT/DELETE of a layered policy (agent-schedule/retention-policy/
+    update-policy) should target, enforcing that a site-scoped user can
+    never touch another organization's layer. Returns (key, site_name_or_None, label).
+    group_id takes precedence over hostname if both are somehow given."""
+    if group_id:
+        found_site, found_group = _find_group_site(group_id, site, _scope_site(user))
+        if not found_group:
+            raise HTTPException(404, f"Group '{group_id}' not found")
+        _enforce_site(user, found_site, what="this group")
+        return _group_override_key(base_key, group_id), found_site, f"Group: {found_group['name']}"
+    if hostname:
+        target_site = _resolve_target_site(user, site)
+        if not target_site:
+            raise HTTPException(400, "site is required when targeting a specific device")
+        return _host_override_key(base_key, target_site, hostname), target_site, f"Device: {hostname}"
+    target_site = _resolve_target_site(user, site)
+    key = base_key if not target_site else _site_override_key(base_key, target_site)
+    return key, target_site, ("OEM Default" if not target_site else f"Site: {target_site}")
+
+
 @app.get("/api/settings")
 async def get_settings(request: Request, site: Optional[str] = None):
     user = await get_user(request)
@@ -2539,36 +3041,65 @@ async def clear_settings_override(site: Optional[str] = None, user=Depends(requi
 
 
 @app.get("/api/agent-schedule")
-async def get_agent_schedule(request: Request, site: Optional[str] = None):
+async def get_agent_schedule(request: Request, site: Optional[str] = None,
+                              group_id: Optional[str] = None, hostname: Optional[str] = None):
     """Returns the current dashboard-configurable endpoint agent schedule
     (SME-DefenderAudit/DNSAudit/USBLockdown/ProcessMonitor/ThreatReporter/
     TimelineCollector/Reporter/CommandExecutor), merged with defaults for
     any key never explicitly saved, layered OEM-global then (if scoped, or
-    ?site= given by an oem_admin) that site's own override."""
+    ?site= given by an oem_admin) that site's own override.
+
+    group_id or hostname switches to editing THAT specific layer instead:
+    returns the RAW override doc at that layer (merged only with
+    defaults, not the full inheritance chain) plus an `exempt` flag and a
+    human-readable `scope_label` — this is what the Groups page and a
+    device's Policy tab edit."""
     user = await get_user(request)
     if not user:
         raise HTTPException(401, "Authentication required")
+    if group_id or hostname:
+        key, _, label = _resolve_policy_target(user, AGENT_SCHEDULE_KEY, site, group_id, hostname)
+        client = s3()
+        doc = (s3_get(client, key) or {}) if client else {}
+        merged = dict(DEFAULT_AGENT_SCHEDULE)
+        merged.update({k: v for k, v in doc.items() if k in DEFAULT_AGENT_SCHEDULE})
+        merged["updated_at"] = doc.get("updated_at")
+        merged["updated_by"] = doc.get("updated_by")
+        merged["is_override"] = any(k in doc for k in DEFAULT_AGENT_SCHEDULE)
+        merged["exempt"] = doc.get("exempt", False)
+        merged["scope_label"] = label
+        return JSONResponse(merged)
     return JSONResponse(_get_agent_schedule(_resolve_target_site(user, site)))
 
 
 @app.put("/api/agent-schedule")
 async def update_agent_schedule(request: Request, site: Optional[str] = None,
+                                 group_id: Optional[str] = None, hostname: Optional[str] = None,
                                  user=Depends(require_perm("settings"))):
-    """Saves the endpoint agent schedule either to the OEM-global doc or
-    to one site's override doc (see _resolve_target_site). Every installed
-    SMESecurityAgent service reads BOTH objects directly on its own cycle
-    (global always, plus its own site's override — see agent.py) and
+    """Saves the endpoint agent schedule to the OEM-global doc, a site's
+    override, a group's override, or one specific device's override/
+    exemption (see _resolve_policy_target). Every installed
+    SMESecurityAgent service reads all applicable layers directly (global,
+    its site, its matching groups, its own hostname — see agent.py) and
     applies changed intervals/enable-toggles live, without a service
-    restart, with the site override always winning per-field."""
+    restart, with more-specific layers always winning per-field.
+    Setting "exempt": true means this layer's target (group or device)
+    doesn't run these scheduled tasks at all, regardless of other fields."""
     body = await request.json()
-    target = _resolve_target_site(user, site)
-    if target and not _find_org(target):
-        raise HTTPException(400, f"'{target}' is not a registered organization")
-    key = AGENT_SCHEDULE_KEY if not target else _site_override_key(AGENT_SCHEDULE_KEY, target)
+    if group_id or hostname:
+        key, target, label = _resolve_policy_target(user, AGENT_SCHEDULE_KEY, site, group_id, hostname)
+    else:
+        target = _resolve_target_site(user, site)
+        if target and not _find_org(target):
+            raise HTTPException(400, f"'{target}' is not a registered organization")
+        key = AGENT_SCHEDULE_KEY if not target else _site_override_key(AGENT_SCHEDULE_KEY, target)
+        label = "OEM Default" if not target else f"Site: {target}"
     client = s3(commander=True)
     if not client:
         raise HTTPException(503, "Commander not configured")
     existing = s3_get(client, key) or {}
+    if "exempt" in body:
+        existing["exempt"] = bool(body["exempt"])
     for k, v in body.items():
         if k not in DEFAULT_AGENT_SCHEDULE:
             continue
@@ -2586,51 +3117,99 @@ async def update_agent_schedule(request: Request, site: Optional[str] = None,
     existing["updated_at"] = datetime.datetime.utcnow().isoformat()
     existing["updated_by"] = user["username"]
     s3_put(client, key, existing)
+    if group_id or hostname:
+        merged = dict(DEFAULT_AGENT_SCHEDULE)
+        merged.update({k: v for k, v in existing.items() if k in DEFAULT_AGENT_SCHEDULE})
+        merged["exempt"] = existing.get("exempt", False)
+        merged["scope_label"] = label
+        merged["updated_at"] = existing.get("updated_at")
+        merged["updated_by"] = existing.get("updated_by")
+        return JSONResponse(merged)
     return JSONResponse(_get_agent_schedule(target))
 
 
 @app.delete("/api/agent-schedule")
-async def clear_agent_schedule_override(site: Optional[str] = None, user=Depends(require_perm("settings"))):
-    target = _resolve_target_site(user, site)
-    if not target:
-        raise HTTPException(400, "Nothing to clear at the OEM-global layer")
+async def clear_agent_schedule_override(site: Optional[str] = None, group_id: Optional[str] = None,
+                                         hostname: Optional[str] = None, user=Depends(require_perm("settings"))):
+    if group_id or hostname:
+        key, target, _ = _resolve_policy_target(user, AGENT_SCHEDULE_KEY, site, group_id, hostname)
+    else:
+        target = _resolve_target_site(user, site)
+        if not target:
+            raise HTTPException(400, "Nothing to clear at the OEM-global layer")
+        key = _site_override_key(AGENT_SCHEDULE_KEY, target)
     client = s3(commander=True)
     if client:
         try:
-            client.delete_object(Bucket=ORACLE_BUCKET, Key=_site_override_key(AGENT_SCHEDULE_KEY, target))
+            client.delete_object(Bucket=ORACLE_BUCKET, Key=key)
         except Exception:
             pass
     return JSONResponse(_get_agent_schedule(target))
 
 
+def _merge_update_policy_doc(merged: dict, doc: dict):
+    """Applies one update-policy JSON doc onto an in-progress merged
+    dict, in place — one section at a time, same shape _get_update_policy
+    already uses for its global-then-site pass. Shared here so group/host
+    raw-doc views and the layered getter both use identical logic."""
+    for section in ("defender_signatures", "windows_updates", "app_updates"):
+        if isinstance(doc.get(section), dict):
+            merged[section].update(doc[section])
+
+
 @app.get("/api/update-policy")
-async def get_update_policy(request: Request, site: Optional[str] = None):
+async def get_update_policy(request: Request, site: Optional[str] = None,
+                             group_id: Optional[str] = None, hostname: Optional[str] = None):
     """Returns the effective (OEM-global + optional site-override) Update
     Management policy — Defender signature freshness, Windows Update
-    auto-install, and winget app auto-update settings."""
+    auto-install, and winget app auto-update settings.
+
+    group_id or hostname switches to editing THAT specific layer instead
+    — same pattern as GET /api/agent-schedule, see its docstring."""
     user = await get_user(request)
     if not user:
         raise HTTPException(401, "Authentication required")
+    if group_id or hostname:
+        key, _, label = _resolve_policy_target(user, UPDATE_POLICY_KEY, site, group_id, hostname)
+        client = s3()
+        doc = (s3_get(client, key) or {}) if client else {}
+        merged = json.loads(json.dumps(DEFAULT_UPDATE_POLICY))
+        _merge_update_policy_doc(merged, doc)
+        merged["updated_at"] = doc.get("updated_at")
+        merged["updated_by"] = doc.get("updated_by")
+        merged["is_override"] = any(s in doc for s in ("defender_signatures", "windows_updates", "app_updates"))
+        merged["exempt"] = doc.get("exempt", False)
+        merged["scope_label"] = label
+        return JSONResponse(merged)
     return JSONResponse(_get_update_policy(_resolve_target_site(user, site)))
 
 
 @app.put("/api/update-policy")
 async def update_update_policy(request: Request, site: Optional[str] = None,
+                                group_id: Optional[str] = None, hostname: Optional[str] = None,
                                 user=Depends(require_perm("settings"))):
-    """Saves the update policy either to the OEM-global doc or to one
-    site's override doc. Loads the RAW doc at the target key (not the
+    """Saves the update policy to the OEM-global doc, a site's override, a
+    group's override, or one specific device's override/exemption (see
+    _resolve_policy_target). Loads the RAW doc at the target key (not the
     merged effective view) so untouched fields keep inheriting live from
-    the OEM-global default instead of being frozen into the site override
-    — same pattern as settings/agent-schedule/retention-policy."""
+    less-specific layers instead of being frozen in — same pattern as
+    settings/agent-schedule/retention-policy. "exempt": true means this
+    device/group is skipped by update_checker.py entirely."""
     body = await request.json()
-    target = _resolve_target_site(user, site)
-    if target and not _find_org(target):
-        raise HTTPException(400, f"'{target}' is not a registered organization")
-    key = UPDATE_POLICY_KEY if not target else _site_override_key(UPDATE_POLICY_KEY, target)
+    if group_id or hostname:
+        key, target, label = _resolve_policy_target(user, UPDATE_POLICY_KEY, site, group_id, hostname)
+    else:
+        target = _resolve_target_site(user, site)
+        if target and not _find_org(target):
+            raise HTTPException(400, f"'{target}' is not a registered organization")
+        key = UPDATE_POLICY_KEY if not target else _site_override_key(UPDATE_POLICY_KEY, target)
+        label = "OEM Default" if not target else f"Site: {target}"
     client = s3(commander=True)
     if not client:
         raise HTTPException(503, "Commander not configured")
     current = s3_get(client, key) or {}
+    if "exempt" in body:
+        current["exempt"] = bool(body["exempt"])
     for section in ("defender_signatures", "windows_updates", "app_updates"):
         if section not in body or not isinstance(body[section], dict):
             continue
@@ -2683,31 +3262,169 @@ async def update_update_policy(request: Request, site: Optional[str] = None,
     current["updated_at"] = datetime.datetime.utcnow().isoformat()
     current["updated_by"] = user["username"]
     s3_put(client, key, current)
+    if group_id or hostname:
+        merged = json.loads(json.dumps(DEFAULT_UPDATE_POLICY))
+        _merge_update_policy_doc(merged, current)
+        merged["exempt"] = current.get("exempt", False)
+        merged["scope_label"] = label
+        merged["updated_at"] = current.get("updated_at")
+        merged["updated_by"] = current.get("updated_by")
+        return JSONResponse(merged)
     return JSONResponse(_get_update_policy(target))
 
 
 @app.delete("/api/update-policy")
-async def clear_update_policy_override(site: Optional[str] = None, user=Depends(require_perm("settings"))):
-    target = _resolve_target_site(user, site)
-    if not target:
-        raise HTTPException(400, "Nothing to clear at the OEM-global layer")
+async def clear_update_policy_override(site: Optional[str] = None, group_id: Optional[str] = None,
+                                        hostname: Optional[str] = None, user=Depends(require_perm("settings"))):
+    if group_id or hostname:
+        key, target, _ = _resolve_policy_target(user, UPDATE_POLICY_KEY, site, group_id, hostname)
+    else:
+        target = _resolve_target_site(user, site)
+        if not target:
+            raise HTTPException(400, "Nothing to clear at the OEM-global layer")
+        key = _site_override_key(UPDATE_POLICY_KEY, target)
     client = s3(commander=True)
     if client:
         try:
-            client.delete_object(Bucket=ORACLE_BUCKET, Key=_site_override_key(UPDATE_POLICY_KEY, target))
+            client.delete_object(Bucket=ORACLE_BUCKET, Key=key)
         except Exception:
             pass
     return JSONResponse(_get_update_policy(target))
 
 
-@app.get("/api/retention-policy")
-async def get_retention_policy(request: Request, site: Optional[str] = None):
-    """Returns the merged retention policy with the destination secret key
-    redacted (see _get_retention_policy), layered OEM-global then (if
-    scoped, or ?site= given by an oem_admin) that site's own override."""
+@app.get("/api/telemetry-policy")
+async def get_telemetry_policy(request: Request, site: Optional[str] = None,
+                                group_id: Optional[str] = None, hostname: Optional[str] = None):
+    """Returns the effective (OEM-global + optional site-override)
+    Telemetry policy — DNS query capture and browsing history, both
+    opt-in and OFF by default. group_id or hostname switches to editing
+    THAT specific layer instead — same pattern as GET /api/agent-schedule."""
     user = await get_user(request)
     if not user:
         raise HTTPException(401, "Authentication required")
+    if group_id or hostname:
+        key, _, label = _resolve_policy_target(user, TELEMETRY_POLICY_KEY, site, group_id, hostname)
+        client = s3()
+        doc = (s3_get(client, key) or {}) if client else {}
+        merged = json.loads(json.dumps(DEFAULT_TELEMETRY_POLICY))
+        _merge_telemetry_policy_doc(merged, doc)
+        merged["updated_at"] = doc.get("updated_at")
+        merged["updated_by"] = doc.get("updated_by")
+        merged["is_override"] = any(s in doc for s in ("dns_capture", "browsing_history"))
+        merged["exempt"] = doc.get("exempt", False)
+        merged["scope_label"] = label
+        return JSONResponse(merged)
+    return JSONResponse(_get_telemetry_policy(_resolve_target_site(user, site)))
+
+
+@app.put("/api/telemetry-policy")
+async def update_telemetry_policy(request: Request, site: Optional[str] = None,
+                                   group_id: Optional[str] = None, hostname: Optional[str] = None,
+                                   user=Depends(require_perm("settings"))):
+    """Saves the telemetry policy to the OEM-global doc, a site's override,
+    a group's override, or one specific device's override/exemption. Both
+    dns_capture and browsing_history surface what a device (and its user)
+    has been doing online, so — unlike Update Policy — this stays entirely
+    opt-in with no "safe to enable by default" section. Loads the RAW doc
+    at the target key so untouched fields keep inheriting live from
+    less-specific layers, same pattern as every other layered policy here."""
+    body = await request.json()
+    if group_id or hostname:
+        key, target, label = _resolve_policy_target(user, TELEMETRY_POLICY_KEY, site, group_id, hostname)
+    else:
+        target = _resolve_target_site(user, site)
+        if target and not _find_org(target):
+            raise HTTPException(400, f"'{target}' is not a registered organization")
+        key = TELEMETRY_POLICY_KEY if not target else _site_override_key(TELEMETRY_POLICY_KEY, target)
+        label = "OEM Default" if not target else f"Site: {target}"
+    client = s3(commander=True)
+    if not client:
+        raise HTTPException(503, "Commander not configured")
+    current = s3_get(client, key) or {}
+    if "exempt" in body:
+        current["exempt"] = bool(body["exempt"])
+    if "dns_capture" in body and isinstance(body["dns_capture"], dict):
+        current.setdefault("dns_capture", {})
+        if "enabled" in body["dns_capture"]:
+            current["dns_capture"]["enabled"] = bool(body["dns_capture"]["enabled"])
+    if "browsing_history" in body and isinstance(body["browsing_history"], dict):
+        current.setdefault("browsing_history", {})
+        incoming = body["browsing_history"]
+        if "enabled" in incoming:
+            current["browsing_history"]["enabled"] = bool(incoming["enabled"])
+        if "max_entries_per_browser" in incoming:
+            try:
+                v = int(incoming["max_entries_per_browser"])
+            except (TypeError, ValueError):
+                raise HTTPException(400, "'browsing_history.max_entries_per_browser' must be a whole number")
+            if v < 1:
+                raise HTTPException(400, "'browsing_history.max_entries_per_browser' must be at least 1")
+            current["browsing_history"]["max_entries_per_browser"] = v
+    current["updated_at"] = datetime.datetime.utcnow().isoformat()
+    current["updated_by"] = user["username"]
+    s3_put(client, key, current)
+    if group_id or hostname:
+        merged = json.loads(json.dumps(DEFAULT_TELEMETRY_POLICY))
+        _merge_telemetry_policy_doc(merged, current)
+        merged["exempt"] = current.get("exempt", False)
+        merged["scope_label"] = label
+        merged["updated_at"] = current.get("updated_at")
+        merged["updated_by"] = current.get("updated_by")
+        return JSONResponse(merged)
+    return JSONResponse(_get_telemetry_policy(target))
+
+
+@app.delete("/api/telemetry-policy")
+async def clear_telemetry_policy_override(site: Optional[str] = None, group_id: Optional[str] = None,
+                                           hostname: Optional[str] = None, user=Depends(require_perm("settings"))):
+    if group_id or hostname:
+        key, target, _ = _resolve_policy_target(user, TELEMETRY_POLICY_KEY, site, group_id, hostname)
+    else:
+        target = _resolve_target_site(user, site)
+        if not target:
+            raise HTTPException(400, "Nothing to clear at the OEM-global layer")
+        key = _site_override_key(TELEMETRY_POLICY_KEY, target)
+    client = s3(commander=True)
+    if client:
+        try:
+            client.delete_object(Bucket=ORACLE_BUCKET, Key=key)
+        except Exception:
+            pass
+    return JSONResponse(_get_telemetry_policy(target))
+
+
+@app.get("/api/retention-policy")
+async def get_retention_policy(request: Request, site: Optional[str] = None,
+                                group_id: Optional[str] = None, hostname: Optional[str] = None):
+    """Returns the merged retention policy with the destination secret key
+    redacted (see _get_retention_policy), layered OEM-global then (if
+    scoped, or ?site= given by an oem_admin) that site's own override.
+
+    group_id or hostname switches to editing THAT specific layer instead
+    — same pattern as GET /api/agent-schedule. Only the endpoint-side
+    fields (targets.endpoint_logs/endpoint_quarantine, age_days,
+    max_size_gb, delete_from_endpoint) are meaningful at group/device
+    granularity — the cloud sweep (archive/alerts) always runs per
+    organization, not per device, since there's no such thing as "this
+    one device's" archived reports."""
+    user = await get_user(request)
+    if not user:
+        raise HTTPException(401, "Authentication required")
+    if group_id or hostname:
+        key, _, label = _resolve_policy_target(user, RETENTION_POLICY_KEY, site, group_id, hostname)
+        client = s3()
+        doc = (s3_get(client, key) or {}) if client else {}
+        merged = json.loads(json.dumps(DEFAULT_RETENTION_POLICY))
+        _merge_retention_doc(merged, doc)
+        has_secret = bool(merged["move_destination"].get("secret_key"))
+        merged["move_destination"]["secret_key"] = ""
+        merged["move_destination"]["has_secret"] = has_secret
+        merged["updated_at"] = doc.get("updated_at")
+        merged["updated_by"] = doc.get("updated_by")
+        merged["is_override"] = any(k in doc for k in DEFAULT_RETENTION_POLICY)
+        merged["exempt"] = doc.get("exempt", False)
+        merged["scope_label"] = label
+        return JSONResponse(merged)
     target = _resolve_target_site(user, site)
     policy = _get_retention_policy(redact=True, site_name=target)
     policy["last_run"] = _get_retention_last_run(target)
@@ -2716,20 +3433,27 @@ async def get_retention_policy(request: Request, site: Optional[str] = None):
 
 @app.put("/api/retention-policy")
 async def update_retention_policy(request: Request, site: Optional[str] = None,
+                                   group_id: Optional[str] = None, hostname: Optional[str] = None,
                                    user=Depends(require_perm("settings"))):
-    """Saves the retention policy either to the OEM-global doc or to one
-    site's override doc (see _resolve_target_site). Deletion is
-    destructive, so every field is validated defensively and an omitted/
-    blank destination secret_key means 'keep the existing one' rather
-    than 'clear it' — this is a write-only field the browser never sees
-    back from GET. Loads the RAW doc at the target key (not the merged
-    effective view) so untouched fields keep inheriting live from the
-    OEM-global default instead of being frozen into the site override."""
+    """Saves the retention policy to the OEM-global doc, a site's
+    override, a group's override, or one specific device's override/
+    exemption (see _resolve_policy_target). Deletion is destructive, so
+    every field is validated defensively and an omitted/blank destination
+    secret_key means 'keep the existing one' rather than 'clear it' — this
+    is a write-only field the browser never sees back from GET. Loads the
+    RAW doc at the target key (not the merged effective view) so untouched
+    fields keep inheriting live from less-specific layers instead of being
+    frozen in. "exempt": true at group/device level skips endpoint
+    retention (log rotation, quarantine pruning) for that target entirely."""
     body = await request.json()
-    target = _resolve_target_site(user, site)
-    if target and not _find_org(target):
-        raise HTTPException(400, f"'{target}' is not a registered organization")
-    key = RETENTION_POLICY_KEY if not target else _site_override_key(RETENTION_POLICY_KEY, target)
+    if group_id or hostname:
+        key, target, label = _resolve_policy_target(user, RETENTION_POLICY_KEY, site, group_id, hostname)
+    else:
+        target = _resolve_target_site(user, site)
+        if target and not _find_org(target):
+            raise HTTPException(400, f"'{target}' is not a registered organization")
+        key = RETENTION_POLICY_KEY if not target else _site_override_key(RETENTION_POLICY_KEY, target)
+        label = "OEM Default" if not target else f"Site: {target}"
     client = s3(commander=True)
     if not client:
         raise HTTPException(503, "Commander not configured")
@@ -2737,11 +3461,13 @@ async def update_retention_policy(request: Request, site: Optional[str] = None,
     current.setdefault("targets", {})
     current.setdefault("move_destination", {})
     # For validation/defaulting convenience, work against the effective
-    # (merged) view for anything not explicitly present in the raw doc,
-    # but only ever WRITE the fields the request actually touches (plus
-    # whatever was already explicitly set in this doc before).
-    effective = _get_retention_policy(redact=False, site_name=target)
+    # (merged, site-level) view for anything not explicitly present in the
+    # raw doc, but only ever WRITE the fields the request actually
+    # touches (plus whatever was already explicitly set in this doc before).
+    effective = _get_retention_policy(redact=False, site_name=target if not (group_id or hostname) else None)
 
+    if "exempt" in body:
+        current["exempt"] = bool(body["exempt"])
     if "enabled" in body:
         current["enabled"] = bool(body["enabled"])
     if "action" in body:
@@ -2802,19 +3528,34 @@ async def update_retention_policy(request: Request, site: Optional[str] = None,
     current["updated_at"] = datetime.datetime.utcnow().isoformat()
     current["updated_by"] = user["username"]
     s3_put(client, key, current)
+    if group_id or hostname:
+        merged = json.loads(json.dumps(DEFAULT_RETENTION_POLICY))
+        _merge_retention_doc(merged, current)
+        merged["move_destination"]["has_secret"] = bool(merged["move_destination"].get("secret_key"))
+        merged["move_destination"]["secret_key"] = ""
+        merged["exempt"] = current.get("exempt", False)
+        merged["scope_label"] = label
+        merged["updated_at"] = current.get("updated_at")
+        merged["updated_by"] = current.get("updated_by")
+        return JSONResponse(merged)
     out = _get_retention_policy(redact=True, site_name=target)
     return JSONResponse(out)
 
 
 @app.delete("/api/retention-policy")
-async def clear_retention_policy_override(site: Optional[str] = None, user=Depends(require_perm("settings"))):
-    target = _resolve_target_site(user, site)
-    if not target:
-        raise HTTPException(400, "Nothing to clear at the OEM-global layer")
+async def clear_retention_policy_override(site: Optional[str] = None, group_id: Optional[str] = None,
+                                           hostname: Optional[str] = None, user=Depends(require_perm("settings"))):
+    if group_id or hostname:
+        key, target, _ = _resolve_policy_target(user, RETENTION_POLICY_KEY, site, group_id, hostname)
+    else:
+        target = _resolve_target_site(user, site)
+        if not target:
+            raise HTTPException(400, "Nothing to clear at the OEM-global layer")
+        key = _site_override_key(RETENTION_POLICY_KEY, target)
     client = s3(commander=True)
     if client:
         try:
-            client.delete_object(Bucket=ORACLE_BUCKET, Key=_site_override_key(RETENTION_POLICY_KEY, target))
+            client.delete_object(Bucket=ORACLE_BUCKET, Key=key)
         except Exception:
             pass
     return JSONResponse(_get_retention_policy(redact=True, site_name=target))
