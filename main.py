@@ -201,6 +201,81 @@ DEFAULT_TELEMETRY_POLICY = {
     "dns_capture":      {"enabled": False},
     "browsing_history":  {"enabled": False, "max_entries_per_browser": 500},
 }
+
+# UEBA / Behavioral Detection — "new-value" anomaly detection, not
+# statistical ML: a per-device baseline of process paths / parent-child
+# pairs / DNS domains / remote IPs / logon users / browsed domains ever
+# seen before; anything genuinely new (past the learning period) becomes
+# a "ueba" alert, flowing through the exact same alert pipeline as a
+# Defender or playbook detection (enrichment, AI analysis, everything).
+# Entirely server-side — evaluated from data already uploaded by Timeline/
+# Browsing History, so this needs ZERO endpoint-agent changes or redeploys.
+# Off by default: unlike Update Policy, turning this on actively CREATES
+# new alerts, so it's a deliberate admin opt-in, same spirit as Telemetry.
+UEBA_POLICY_KEY = "config/ueba_policy.json"
+UEBA_BASELINE_KEY_TMPL = "config/ueba_baseline/{site}/{hostname}.json"
+UEBA_SET_CAP = 5000            # per-list cap on each baseline (oldest evicted first)
+UEBA_MIN_INTERVAL_SECS = 120   # throttle: at most one evaluation pass per device per this many seconds, regardless of dashboard poll frequency
+DEFAULT_UEBA_POLICY = {
+    "enabled": False,
+    "learning_period_days": 7,   # first N days of a device's baseline just get recorded, never flagged — otherwise every brand-new device floods with false "new X" alerts for entirely normal first-time activity
+    "off_hours": None,           # {"start": "20:00", "end": "07:00"} — None disables the off_hours signal regardless of the toggle below
+    "signals": {
+        "new_process_path":    True,
+        "new_parent_child":    True,
+        "new_dns_domain":      True,
+        "new_remote_ip":       True,
+        "new_logon_user":      True,
+        "new_browsing_domain": True,
+        "off_hours":           False,
+    },
+}
+UEBA_FINDING_META = {
+    "new_process_path":    {"technique": "T1204.002", "label": "New Process Path Observed"},
+    "new_parent_child":    {"technique": "T1055",     "label": "New Parent/Child Process Relationship"},
+    "new_dns_domain":      {"technique": "T1071.001", "label": "New DNS Domain Contacted"},
+    "new_remote_ip":       {"technique": "T1071",     "label": "New Remote Network Destination"},
+    "new_logon_user":      {"technique": "T1078",     "label": "New User Account on This Device"},
+    "new_browsing_domain": {"technique": "T1071.001", "label": "New Domain Browsed"},
+    "off_hours":           {"technique": "T1078",     "label": "Off-Hours Activity"},
+}
+
+# Defender scan exclusions — OEM/org-admin-approved paths/extensions/
+# processes that Windows Defender should not scan. Exclusions are a
+# well-known malware-evasion technique (hide a payload's folder from AV),
+# so this is deliberately NOT a fire-and-forget "add whatever you want"
+# list: orchestrator.py reconciles the machine's ACTUAL exclusions
+# against this approved list every audit cycle, and anything present on
+# the machine but NOT approved here surfaces as a HIGH-severity alert
+# (see the "defender" module block in fetch_status) — so unauthorized
+# exclusions are a visible finding, not a silent blind spot. Removing an
+# unauthorized exclusion additionally requires remove_unauthorized=True
+# AND enforcement to be ON for that device — real destructive action,
+# same "explicit opt-in" bar as everything else in this platform.
+EXCLUSION_POLICY_KEY = "config/exclusion_policy.json"
+DEFAULT_EXCLUSION_POLICY = {
+    "paths": [], "extensions": [], "processes": [], "remove_unauthorized": False,
+}
+# Guardrails against an admin fat-fingering a catastrophically broad
+# exclusion (excluding a whole drive or the Windows folder would blind
+# Defender almost entirely). Not exhaustive — this is a safety rail
+# against obvious mistakes, not a substitute for admin judgement.
+_DANGEROUS_EXCLUSION_PATTERNS = (
+    re.compile(r"^[a-zA-Z]:\\?$"),                       # bare drive root, e.g. "C:\"
+    re.compile(r"^[a-zA-Z]:\\windows(\\.*)?$", re.I),     # C:\Windows and everything under it
+    re.compile(r"^\*+$"),                                 # bare wildcard
+)
+
+
+def _validate_exclusion_path(path: str) -> str:
+    p = (path or "").strip()
+    if not p:
+        raise HTTPException(400, "Exclusion path cannot be blank")
+    if any(pat.match(p) for pat in _DANGEROUS_EXCLUSION_PATTERNS):
+        raise HTTPException(400, f"'{p}' is too broad to approve as a scan exclusion "
+                                  f"(would blind Defender to an entire drive or the Windows folder)")
+    return p
+
 ALLOWED_ACTIONS = [
     "alert_only", "kill_process", "isolate_host",
     "block_network", "collect_forensics",
@@ -494,6 +569,30 @@ def fetch_status() -> list:
                 "app_upgrade_count":      au.get("upgrade_count"),
                 "app_approved_pending":   au.get("approved_pending_count"),
             }
+        if module == "defender":
+            # Defender scan exclusions found on the machine that AREN'T on
+            # the admin-approved list (see orchestrator.py's
+            # reconcile_exclusions) are a real security signal — an
+            # exclusion is a classic way to hide a malicious file/folder
+            # from AV, whether added by an attacker or an unauthorized
+            # local admin — so surface them as alerts through the exact
+            # same pipeline as a Defender detection, not just a quiet
+            # compliance number buried in a report.
+            excl = raw.get("exclusions") or {}
+            for kind, key in (("path", "unauthorized_paths"), ("extension", "unauthorized_extensions"),
+                               ("process", "unauthorized_processes")):
+                for value in excl.get(key, []):
+                    machines[mk]["alerts"].append({
+                        "id":           f"excl-{hostname}-{kind}-{value}"[:120].replace("\\", "_").replace("/", "_").replace(":", "_"),
+                        "hostname":     hostname, "site_name": site_name,
+                        "source":       "defender", "time": raw.get("timestamp"),
+                        "detected_at":  raw.get("timestamp"),
+                        "threat_name":  f"Unauthorized Defender {kind} exclusion",
+                        "severity":     "HIGH", "category": "exclusion_drift",
+                        "action":       "", "process_name": value if kind == "process" else "",
+                        "command_line": value if kind == "path" else "",
+                        "user": "", "status": "New",
+                    })
         if module == "threat":
             for d in raw.get("detections", []):
                 machines[mk]["alerts"].append({
@@ -863,6 +962,7 @@ def fetch_device_detail(site_name: str, hostname: str) -> dict:
                 "query_type":   evt.get("query_type", ""),
                 "query_results": evt.get("query_results", ""),
                 "query_status": evt.get("query_status", ""),
+                "agent_internal": bool(evt.get("agent_internal")),
             })
     for module in ["usb", "process_monitor"]:
         if module in modules:
@@ -1170,6 +1270,70 @@ def _merge_telemetry_policy_doc(merged: dict, doc: dict):
             merged[section].update(doc[section])
 
 
+def _merge_exclusion_policy_doc(merged: dict, doc: dict):
+    """Applies one exclusion-policy JSON doc onto an in-progress merged
+    dict, in place. Unlike the nested-section policies, the three
+    approved-entry lists are wholesale REPLACED (not item-merged) by
+    whichever doc sets them — see ExclusionPolicyStore's docstring for
+    why: an admin editing the list means "here is the complete list",
+    not "add these on top."""
+    for section in ("paths", "extensions", "processes"):
+        if section in doc and isinstance(doc[section], list):
+            merged[section] = doc[section]
+    if "remove_unauthorized" in doc:
+        merged["remove_unauthorized"] = bool(doc["remove_unauthorized"])
+
+
+def _get_exclusion_policy(site_name: Optional[str] = None) -> dict:
+    """Merges DEFAULT_EXCLUSION_POLICY with the OEM-global doc, then — if
+    site_name is given — that site's own override doc on top. Endpoint
+    agents read the raw Oracle objects directly (global + site + matching
+    group(s) + host — see agent.py's ExclusionPolicyStore); this function
+    only backs the dashboard UI's site-level view."""
+    client = s3()
+    global_doc = (s3_get(client, EXCLUSION_POLICY_KEY) or {}) if client else {}
+    merged = json.loads(json.dumps(DEFAULT_EXCLUSION_POLICY))
+    _merge_exclusion_policy_doc(merged, global_doc)
+    site_doc = {}
+    if site_name and client:
+        site_doc = s3_get(client, _site_override_key(EXCLUSION_POLICY_KEY, site_name)) or {}
+        _merge_exclusion_policy_doc(merged, site_doc)
+    src = site_doc or global_doc
+    merged["updated_at"] = src.get("updated_at")
+    merged["updated_by"] = src.get("updated_by")
+    merged["is_site_override"] = bool(site_doc)
+    return merged
+
+
+def _get_ueba_policy(site_name: Optional[str] = None) -> dict:
+    """Merges DEFAULT_UEBA_POLICY with the OEM-global doc, then — if
+    site_name is given — that site's own override doc on top. Site-only
+    layering for v1 (no group/host drill-down like Schedule/Retention/
+    Update Policy) — baselines are inherently per-device already, so the
+    marginal value of per-group policy tuning is much lower here; can be
+    added later using the exact same _resolve_policy_target machinery if
+    it turns out to matter."""
+    client = s3()
+    global_doc = (s3_get(client, UEBA_POLICY_KEY) or {}) if client else {}
+    merged = json.loads(json.dumps(DEFAULT_UEBA_POLICY))  # deep copy
+    merged["signals"].update(global_doc.get("signals") or {})
+    for k in ("enabled", "learning_period_days", "off_hours"):
+        if k in global_doc:
+            merged[k] = global_doc[k]
+    site_doc = {}
+    if site_name and client:
+        site_doc = s3_get(client, _site_override_key(UEBA_POLICY_KEY, site_name)) or {}
+        merged["signals"].update(site_doc.get("signals") or {})
+        for k in ("enabled", "learning_period_days", "off_hours"):
+            if k in site_doc:
+                merged[k] = site_doc[k]
+    src = site_doc or global_doc
+    merged["updated_at"] = src.get("updated_at")
+    merged["updated_by"] = src.get("updated_by")
+    merged["is_site_override"] = bool(site_doc)
+    return merged
+
+
 def _get_telemetry_policy(site_name: Optional[str] = None) -> dict:
     """Merges DEFAULT_TELEMETRY_POLICY with the OEM-global doc, then — if
     site_name is given — that site's own override doc on top, same
@@ -1192,6 +1356,166 @@ def _get_telemetry_policy(site_name: Optional[str] = None) -> dict:
 
 
 
+def _load_ueba_baseline(site_name: str, hostname: str) -> Optional[dict]:
+    client = s3()
+    if not client:
+        return None
+    return s3_get(client, UEBA_BASELINE_KEY_TMPL.format(site=site_name, hostname=hostname))
+
+
+def _save_ueba_baseline(site_name: str, hostname: str, baseline: dict):
+    client = s3(commander=True)
+    if client:
+        s3_put(client, UEBA_BASELINE_KEY_TMPL.format(site=site_name, hostname=hostname), baseline)
+
+
+def _new_ueba_baseline() -> dict:
+    now = datetime.datetime.utcnow().isoformat()
+    return {
+        "baseline_started_at": now, "last_ueba_check": None, "updated_at": now,
+        "known_process_paths": [], "known_parent_child": [], "known_dns_domains": [],
+        "known_remote_ips": [], "known_logon_users": [], "known_browsing_domains": [],
+    }
+
+
+def _ueba_add(baseline_list: list, value: str) -> bool:
+    """Adds `value` to a baseline list-as-set if not already present
+    (capped at UEBA_SET_CAP, oldest evicted first). Returns True if it
+    was ALREADY known (no-op — never flag), False if this is the first
+    time it's been seen (freshly added — flag if past the learning period)."""
+    if not value:
+        return True  # nothing to evaluate; treat as "known" so it's never flagged
+    if value in baseline_list:
+        return True
+    baseline_list.append(value)
+    if len(baseline_list) > UEBA_SET_CAP:
+        del baseline_list[0]
+    return False
+
+
+def _extract_domain(url_or_domain: str) -> str:
+    if not url_or_domain:
+        return ""
+    s = url_or_domain.strip().lower()
+    if "://" in s:
+        try:
+            from urllib.parse import urlparse
+            s = urlparse(s).netloc or s
+        except Exception:
+            pass
+    s = s.split("/")[0].split(":")[0]
+    return s.rstrip(".")
+
+
+def _in_off_hours(dt: datetime.datetime, window: Optional[dict]) -> bool:
+    if not window or not window.get("start") or not window.get("end"):
+        return False
+    try:
+        sh, sm = (int(x) for x in window["start"].split(":"))
+        eh, em = (int(x) for x in window["end"].split(":"))
+    except (ValueError, KeyError, AttributeError):
+        return False
+    start_m, end_m, now_m = sh * 60 + sm, eh * 60 + em, dt.hour * 60 + dt.minute
+    if start_m <= end_m:
+        return start_m <= now_m < end_m
+    return now_m >= start_m or now_m < end_m  # window crosses midnight
+
+
+def _ueba_finding(kind: str, evt: dict, description: str) -> dict:
+    meta = UEBA_FINDING_META.get(kind, {})
+    return {
+        "ueba_kind": kind, "threat_name": meta.get("label", kind),
+        "severity": "MEDIUM", "mitre_tactic": meta.get("technique", ""),
+        "process_name": evt.get("process_name") or "", "command_line": evt.get("command_line") or "",
+        "detected_at": evt.get("time") or datetime.datetime.utcnow().isoformat(),
+        "description_override": description,
+    }
+
+
+def evaluate_ueba_for_device(site_name: str, hostname: str, policy: dict) -> list:
+    """Incremental "new-value" UEBA pass for one device: loads its
+    baseline, walks only Timeline/Browsing-History entries newer than
+    the baseline's last_ueba_check, checks each against the relevant
+    'known' set, and returns findings for anything genuinely new AND
+    past the learning period. Every checked entity — flagged or not — is
+    added to the baseline afterward, so it's 'known' from here on.
+    Throttled to UEBA_MIN_INTERVAL_SECS per device so polling frequency
+    doesn't drive Oracle read cost; the expensive fetch_device_detail()
+    call only happens when actually due."""
+    if not policy.get("enabled"):
+        return []
+    baseline = _load_ueba_baseline(site_name, hostname) or _new_ueba_baseline()
+    last_run = _parse_utc(baseline.get("updated_at") or "")
+    if last_run and (datetime.datetime.utcnow() - last_run).total_seconds() < UEBA_MIN_INTERVAL_SECS:
+        return []
+
+    started = _parse_utc(baseline.get("baseline_started_at") or "") or datetime.datetime.utcnow()
+    learning_days = int(policy.get("learning_period_days") or 7)
+    in_learning = (datetime.datetime.utcnow() - started).days < learning_days
+    last_check = _parse_utc(baseline.get("last_ueba_check") or "")
+    signals = policy.get("signals", {})
+    off_hours_window = policy.get("off_hours")
+
+    detail = fetch_device_detail(site_name, hostname)
+    findings = []
+    newest_seen = last_check
+
+    for evt in detail.get("timeline", []):
+        dt = _parse_utc(evt.get("time") or "")
+        if not dt or (last_check and dt <= last_check):
+            continue
+        if not newest_seen or dt > newest_seen:
+            newest_seen = dt
+        et = evt.get("event_type")
+        if et == "process_creation" and not evt.get("agent_internal"):
+            path = (evt.get("path") or evt.get("process_name") or "").lower()
+            if signals.get("new_process_path") and not _ueba_add(baseline["known_process_paths"], path) and not in_learning:
+                findings.append(_ueba_finding("new_process_path", evt, f"First time seen on this device: {path}"))
+            if evt.get("parent_name"):
+                pair = f"{(evt.get('parent_name') or '').lower()}|{(evt.get('process_name') or '').lower()}"
+                if signals.get("new_parent_child") and not _ueba_add(baseline["known_parent_child"], pair) and not in_learning:
+                    findings.append(_ueba_finding("new_parent_child", evt,
+                                                   f"{evt.get('parent_name')} launched {evt.get('process_name')} for the first time"))
+            if signals.get("off_hours") and _in_off_hours(dt, off_hours_window):
+                findings.append(_ueba_finding("off_hours", evt,
+                                               f"{evt.get('process_name') or 'Process'} launched at {dt.strftime('%H:%M')} UTC, outside business hours"))
+        elif et == "dns_query" and signals.get("new_dns_domain"):
+            domain = _extract_domain(evt.get("query_name") or "")
+            if domain and not _ueba_add(baseline["known_dns_domains"], domain) and not in_learning:
+                findings.append(_ueba_finding("new_dns_domain", evt, f"First DNS query for: {domain}"))
+        elif et == "network_connection" and signals.get("new_remote_ip"):
+            ip = evt.get("remote_address") or ""
+            if ip and not _ueba_add(baseline["known_remote_ips"], ip) and not in_learning:
+                findings.append(_ueba_finding("new_remote_ip", evt, f"First connection to: {ip}"))
+        elif et == "logon":
+            user = evt.get("user") or ""
+            if signals.get("new_logon_user") and user and "system" not in user.lower() \
+                    and not _ueba_add(baseline["known_logon_users"], user.lower()) and not in_learning:
+                findings.append(_ueba_finding("new_logon_user", evt, f"First logon by: {user}"))
+            if signals.get("off_hours") and _in_off_hours(dt, off_hours_window):
+                findings.append(_ueba_finding("off_hours", evt,
+                                               f"Logon by {user or 'unknown user'} at {dt.strftime('%H:%M')} UTC, outside business hours"))
+
+    if signals.get("new_browsing_domain"):
+        for entry in detail.get("browsing_history", []):
+            dt = _parse_utc(entry.get("visit_time") or "")
+            if not dt or (last_check and dt <= last_check):
+                continue
+            if not newest_seen or dt > newest_seen:
+                newest_seen = dt
+            domain = _extract_domain(entry.get("url") or "")
+            if domain and not _ueba_add(baseline["known_browsing_domains"], domain) and not in_learning:
+                findings.append(_ueba_finding("new_browsing_domain",
+                                               {"time": entry.get("visit_time"), "process_name": entry.get("title") or domain},
+                                               f"First visit to: {domain}"))
+
+    baseline["last_ueba_check"] = (newest_seen or datetime.datetime.utcnow()).isoformat()
+    baseline["updated_at"] = datetime.datetime.utcnow().isoformat()
+    _save_ueba_baseline(site_name, hostname, baseline)
+    return findings
+
+
+def _get_ai_settings(redact: bool = True) -> dict:
     """Merges DEFAULT_AI_SETTINGS with whatever's saved to Oracle. With
     redact=True (the GET-endpoint default) api_key is stripped and replaced
     with a has_api_key flag, same write-only/sticky pattern as the
@@ -1990,6 +2314,49 @@ async def get_all_alerts(request: Request, status: Optional[str] = None,
             if resolved_key:
                 asyncio.create_task(_auto_generate_ai_analysis(dict(new_alert)))
 
+        # UEBA: "new-value" behavioral findings for this device (new
+        # process path, new parent/child pair, new DNS domain, new remote
+        # IP, new logon user, new browsed domain, off-hours activity —
+        # see evaluate_ueba_for_device). Off by default per organization;
+        # self-throttled to UEBA_MIN_INTERVAL_SECS per device internally,
+        # so calling this on every alerts poll is safe — most calls are a
+        # single cheap Oracle read that immediately returns [].
+        ueba_policy = _get_ueba_policy(m["site_name"])
+        if ueba_policy.get("enabled"):
+            try:
+                ueba_findings = evaluate_ueba_for_device(m["site_name"], m["hostname"], ueba_policy)
+            except Exception:
+                ueba_findings = []
+            for f in ueba_findings:
+                ts = f.get("detected_at") or ""
+                aid = f"auto-ueba-{f.get('ueba_kind')}-{m['site_name']}-{m['hostname']}-{ts.replace(':', '-')}"
+                if aid in existing_ids:
+                    continue
+                new_alert = {
+                    "id": aid, "site_name": m["site_name"], "hostname": m["hostname"],
+                    "source": "ueba", "status": "New",
+                    "severity": f.get("severity") or "MEDIUM",
+                    "threat_name": f.get("threat_name") or "Behavioral Anomaly",
+                    "category": "", "action": "",
+                    "process_name": f.get("process_name") or "",
+                    "command_line": f.get("command_line") or "",
+                    "mitre_tactic": f.get("mitre_tactic") or "",
+                    "detected_at": ts,
+                    "created_at":  datetime.datetime.utcnow().isoformat(timespec="milliseconds"),
+                    "updated_at":  datetime.datetime.utcnow().isoformat(timespec="milliseconds"),
+                    "notes": "",
+                    "description": f.get("description_override") or "",
+                }
+                new_alert = enrich_alert(new_alert)
+                if write_client:
+                    _persist_alert(write_client, new_alert)
+                alerts.append(new_alert)
+                existing_ids.add(aid)
+                cache_bust("alerts")
+                _, resolved_key = _resolve_ai_config()
+                if resolved_key:
+                    asyncio.create_task(_auto_generate_ai_analysis(dict(new_alert)))
+
     if status:
         alerts = [a for a in alerts if a.get("status") == status]
     if site:
@@ -2158,13 +2525,15 @@ def _alert_investigation_context(alert: dict, site_name: Optional[str], hostname
     """Shared correlation logic used by both GET /api/alerts/{id}/context
     (on-demand, for the modal) and _auto_generate_ai_analysis (background,
     right after an alert is created) — Timeline events within
-    ±window_minutes, sibling alerts in the same window, the reconstructed
-    process ancestry chain, and the matched playbook rule's full
-    definition if this alert came from one."""
+    ±window_minutes, browsing activity in the same window (if the org has
+    opted into Browsing History capture — see Telemetry Policy), sibling
+    alerts in the same window, the reconstructed process ancestry chain,
+    and the matched playbook rule's full definition if this alert came
+    from one."""
     client = s3()
     dt_alert = _parse_utc(alert.get("detected_at") or alert.get("time") or "")
     window_s = window_minutes * 60
-    related, siblings, rule_detail, process_chain = [], [], None, []
+    related, browsing, siblings, rule_detail, process_chain = [], [], [], None, []
     if site_name and hostname:
         detail = fetch_device_detail(site_name, hostname)
         timeline = detail.get("timeline", [])
@@ -2176,6 +2545,19 @@ def _alert_investigation_context(alert: dict, site_name: Optional[str], hostname
                     if abs(diff) <= window_s:
                         related.append({**evt, "_delta_secs": round(diff, 1)})
             related.sort(key=lambda x: x.get("time") or "")
+            # Browsing history is a separate opt-in report module (see
+            # browser_history_collector.py) — folded into the SAME
+            # ±window_minutes correlation window here (not merged into
+            # `related`/the Timeline itself, which stays event-shaped;
+            # this is purely for "what was this user doing in the
+            # browser right around when this alert fired").
+            for entry in detail.get("browsing_history", []):
+                dt_visit = _parse_utc(entry.get("visit_time") or "")
+                if dt_visit:
+                    diff = (dt_visit - dt_alert).total_seconds()
+                    if abs(diff) <= window_s:
+                        browsing.append({**entry, "_delta_secs": round(diff, 1)})
+            browsing.sort(key=lambda x: x.get("visit_time") or "")
         process_chain = _build_process_chain(alert, timeline)
         for m in fetch_status():
             if m["site_name"] == site_name and m["hostname"] == hostname:
@@ -2191,7 +2573,7 @@ def _alert_investigation_context(alert: dict, site_name: Optional[str], hostname
             if r.get("name") == alert.get("rule_name"):
                 rule_detail = r
                 break
-    return {"related_events": related, "sibling_alerts": siblings,
+    return {"related_events": related, "related_browsing": browsing, "sibling_alerts": siblings,
             "rule_detail": rule_detail, "process_chain": process_chain,
             "window_minutes": window_minutes}
 
@@ -2359,7 +2741,14 @@ async def uninstall_apps_bulk(request: Request, user=Depends(require_perm("apps"
 
 
 # ── AI Analysis (Claude API) — Layer 2, optional on top of the static KB ──────
-def _build_analysis_prompt(alert: dict, related_events: list) -> str:
+def _build_analysis_prompt(alert: dict, related_events: list, related_browsing: Optional[list] = None) -> str:
+    browsing_section = ""
+    if related_browsing:
+        lines = "\n".join(
+            f"  [{e.get('_delta_secs',0):+.0f}s] {e.get('browser','')} | {(e.get('title') or '')[:60]} | {(e.get('url') or '')[:100]}"
+            for e in related_browsing[:10]
+        )
+        browsing_section = f"\n\nBrowsing Activity (chronological, same window — opt-in data, may be absent):\n{lines}"
     return f"""You are a cybersecurity analyst reviewing an endpoint detection alert from an SME security platform.
 
 Alert Details:
@@ -2373,7 +2762,7 @@ Alert Details:
 - MITRE Tactic: {alert.get('mitre_tactic', 'Unknown')}
 
 Related Events (chronological, ±10 min):
-{chr(10).join(f"  [{e.get('_delta_secs',0):+.0f}s] {e.get('event_type','')} | {e.get('process_name','')} | {(e.get('command_line') or '')[:120]}" for e in related_events[:10]) or '  (none)'}
+{chr(10).join(f"  [{e.get('_delta_secs',0):+.0f}s] {e.get('event_type','')} | {e.get('process_name','')} | {(e.get('command_line') or '')[:120]}" for e in related_events[:10]) or '  (none)'}{browsing_section}
 
 Provide a concise security analysis in this exact JSON format:
 {{
@@ -2388,7 +2777,8 @@ Provide a concise security analysis in this exact JSON format:
 Return ONLY the JSON object, no markdown fences."""
 
 
-def _call_claude_analysis(alert: dict, related_events: list, model: str, api_key: str) -> dict:
+def _call_claude_analysis(alert: dict, related_events: list, model: str, api_key: str,
+                           related_browsing: Optional[list] = None) -> dict:
     """Blocking call to the Claude API — always run this via
     asyncio.get_event_loop().run_in_executor() / asyncio.to_thread(), never
     awaited directly, so it can't stall the event loop. model/api_key come
@@ -2398,7 +2788,7 @@ def _call_claude_analysis(alert: dict, related_events: list, model: str, api_key
     failure; callers decide how to surface that (HTTPException for the
     manual endpoint, a quiet skip for the background auto-trigger)."""
     import urllib.request
-    prompt = _build_analysis_prompt(alert, related_events)
+    prompt = _build_analysis_prompt(alert, related_events, related_browsing)
     req_data = json.dumps({
         "model": model,
         "max_tokens": 1000,
@@ -2434,7 +2824,7 @@ async def _auto_generate_ai_analysis(alert: dict):
             return
         ctx = _alert_investigation_context(alert, alert.get("site_name"), alert.get("hostname"))
         loop = asyncio.get_event_loop()
-        analysis = await loop.run_in_executor(None, _call_claude_analysis, alert, ctx["related_events"], model, api_key)
+        analysis = await loop.run_in_executor(None, _call_claude_analysis, alert, ctx["related_events"], model, api_key, ctx.get("related_browsing"))
         client = s3(commander=True)
         if not client:
             return
@@ -2472,7 +2862,7 @@ async def ai_analyze_alert(request: Request, user=Depends(require_perm("alerts")
     ctx = _alert_investigation_context(alert, site_name, hostname)
     try:
         loop = asyncio.get_event_loop()
-        analysis = await loop.run_in_executor(None, _call_claude_analysis, alert, ctx["related_events"], model, api_key)
+        analysis = await loop.run_in_executor(None, _call_claude_analysis, alert, ctx["related_events"], model, api_key, ctx.get("related_browsing"))
     except json.JSONDecodeError:
         raise HTTPException(502, "AI analysis returned an unparseable response — try again")
     except Exception as e:
@@ -3293,6 +3683,109 @@ async def clear_update_policy_override(site: Optional[str] = None, group_id: Opt
     return JSONResponse(_get_update_policy(target))
 
 
+@app.get("/api/exclusion-policy")
+async def get_exclusion_policy(request: Request, site: Optional[str] = None,
+                                group_id: Optional[str] = None, hostname: Optional[str] = None):
+    """Returns the effective (OEM-global + site override) Defender scan
+    exclusion policy. group_id or hostname switches to editing THAT
+    specific layer instead — same pattern as GET /api/agent-schedule."""
+    user = await get_user(request)
+    if not user:
+        raise HTTPException(401, "Authentication required")
+    if group_id or hostname:
+        key, _, label = _resolve_policy_target(user, EXCLUSION_POLICY_KEY, site, group_id, hostname)
+        client = s3()
+        doc = (s3_get(client, key) or {}) if client else {}
+        merged = json.loads(json.dumps(DEFAULT_EXCLUSION_POLICY))
+        _merge_exclusion_policy_doc(merged, doc)
+        merged["updated_at"] = doc.get("updated_at")
+        merged["updated_by"] = doc.get("updated_by")
+        merged["is_override"] = any(k in doc for k in ("paths", "extensions", "processes", "remove_unauthorized"))
+        merged["exempt"] = doc.get("exempt", False)
+        merged["scope_label"] = label
+        return JSONResponse(merged)
+    return JSONResponse(_get_exclusion_policy(_resolve_target_site(user, site)))
+
+
+@app.put("/api/exclusion-policy")
+async def update_exclusion_policy(request: Request, site: Optional[str] = None,
+                                   group_id: Optional[str] = None, hostname: Optional[str] = None,
+                                   user=Depends(require_perm("settings"))):
+    """Saves the exclusion policy to the OEM-global doc, a site's
+    override, a group's override, or one specific device's override/
+    exemption. The three approved-entry lists are wholesale REPLACED
+    (not merged) — see _merge_exclusion_policy_doc's docstring. Every
+    path is validated against obvious footguns (drive roots, the Windows
+    folder) before being accepted, at every layer."""
+    body = await request.json()
+    if group_id or hostname:
+        key, target, label = _resolve_policy_target(user, EXCLUSION_POLICY_KEY, site, group_id, hostname)
+    else:
+        target = _resolve_target_site(user, site)
+        if target and not _find_org(target):
+            raise HTTPException(400, f"'{target}' is not a registered organization")
+        key = EXCLUSION_POLICY_KEY if not target else _site_override_key(EXCLUSION_POLICY_KEY, target)
+        label = "OEM Default" if not target else f"Site: {target}"
+    client = s3(commander=True)
+    if not client:
+        raise HTTPException(503, "Commander not configured")
+    current = s3_get(client, key) or {}
+    if "exempt" in body:
+        current["exempt"] = bool(body["exempt"])
+    if "remove_unauthorized" in body:
+        current["remove_unauthorized"] = bool(body["remove_unauthorized"])
+    if "paths" in body and isinstance(body["paths"], list):
+        current["paths"] = [{
+            "path": _validate_exclusion_path(e.get("path") if isinstance(e, dict) else e),
+            "reason": (e.get("reason") if isinstance(e, dict) else "") or "",
+            "added_by": user["username"],
+            "added_at": datetime.datetime.utcnow().isoformat(),
+        } for e in body["paths"]]
+    if "extensions" in body and isinstance(body["extensions"], list):
+        current["extensions"] = [{
+            "extension": (e.get("extension") if isinstance(e, dict) else e or "").strip().lstrip("."),
+            "reason": (e.get("reason") if isinstance(e, dict) else "") or "",
+            "added_by": user["username"], "added_at": datetime.datetime.utcnow().isoformat(),
+        } for e in body["extensions"] if (e.get("extension") if isinstance(e, dict) else e)]
+    if "processes" in body and isinstance(body["processes"], list):
+        current["processes"] = [{
+            "process": (e.get("process") if isinstance(e, dict) else e or "").strip(),
+            "reason": (e.get("reason") if isinstance(e, dict) else "") or "",
+            "added_by": user["username"], "added_at": datetime.datetime.utcnow().isoformat(),
+        } for e in body["processes"] if (e.get("process") if isinstance(e, dict) else e)]
+    current["updated_at"] = datetime.datetime.utcnow().isoformat()
+    current["updated_by"] = user["username"]
+    s3_put(client, key, current)
+    if group_id or hostname:
+        merged = json.loads(json.dumps(DEFAULT_EXCLUSION_POLICY))
+        _merge_exclusion_policy_doc(merged, current)
+        merged["exempt"] = current.get("exempt", False)
+        merged["scope_label"] = label
+        merged["updated_at"] = current.get("updated_at")
+        merged["updated_by"] = current.get("updated_by")
+        return JSONResponse(merged)
+    return JSONResponse(_get_exclusion_policy(target))
+
+
+@app.delete("/api/exclusion-policy")
+async def clear_exclusion_policy_override(site: Optional[str] = None, group_id: Optional[str] = None,
+                                           hostname: Optional[str] = None, user=Depends(require_perm("settings"))):
+    if group_id or hostname:
+        key, target, _ = _resolve_policy_target(user, EXCLUSION_POLICY_KEY, site, group_id, hostname)
+    else:
+        target = _resolve_target_site(user, site)
+        if not target:
+            raise HTTPException(400, "Nothing to clear at the OEM-global layer")
+        key = _site_override_key(EXCLUSION_POLICY_KEY, target)
+    client = s3(commander=True)
+    if client:
+        try:
+            client.delete_object(Bucket=ORACLE_BUCKET, Key=key)
+        except Exception:
+            pass
+    return JSONResponse(_get_exclusion_policy(target))
+
+
 @app.get("/api/telemetry-policy")
 async def get_telemetry_policy(request: Request, site: Optional[str] = None,
                                 group_id: Optional[str] = None, hostname: Optional[str] = None):
@@ -3392,6 +3885,76 @@ async def clear_telemetry_policy_override(site: Optional[str] = None, group_id: 
         except Exception:
             pass
     return JSONResponse(_get_telemetry_policy(target))
+
+
+@app.get("/api/ueba-policy")
+async def get_ueba_policy(request: Request, site: Optional[str] = None):
+    """Returns the effective (OEM-global + optional site-override) UEBA /
+    Behavioral Detection policy. Off by default — enabling it actively
+    creates new alerts, so it's a deliberate admin choice."""
+    user = await get_user(request)
+    if not user:
+        raise HTTPException(401, "Authentication required")
+    return JSONResponse(_get_ueba_policy(_resolve_target_site(user, site)))
+
+
+@app.put("/api/ueba-policy")
+async def update_ueba_policy(request: Request, site: Optional[str] = None,
+                              user=Depends(require_perm("settings"))):
+    """Saves the UEBA policy to the OEM-global doc or a site's override.
+    Loads the RAW doc at the target key (not the merged effective view)
+    so untouched fields keep inheriting live from the OEM-global default,
+    same pattern as every other layered policy here."""
+    body = await request.json()
+    target = _resolve_target_site(user, site)
+    if target and not _find_org(target):
+        raise HTTPException(400, f"'{target}' is not a registered organization")
+    key = UEBA_POLICY_KEY if not target else _site_override_key(UEBA_POLICY_KEY, target)
+    client = s3(commander=True)
+    if not client:
+        raise HTTPException(503, "Commander not configured")
+    current = s3_get(client, key) or {}
+    if "enabled" in body:
+        current["enabled"] = bool(body["enabled"])
+    if "learning_period_days" in body:
+        try:
+            v = int(body["learning_period_days"])
+        except (TypeError, ValueError):
+            raise HTTPException(400, "'learning_period_days' must be a whole number")
+        if v < 0:
+            raise HTTPException(400, "'learning_period_days' cannot be negative")
+        current["learning_period_days"] = v
+    if "off_hours" in body:
+        w = body["off_hours"]
+        if w is None:
+            current["off_hours"] = None
+        elif isinstance(w, dict) and "start" in w and "end" in w:
+            current["off_hours"] = {"start": str(w["start"]), "end": str(w["end"])}
+        else:
+            raise HTTPException(400, "'off_hours' must be null or {start, end}")
+    if "signals" in body and isinstance(body["signals"], dict):
+        current.setdefault("signals", {})
+        for k, v in body["signals"].items():
+            if k in DEFAULT_UEBA_POLICY["signals"]:
+                current["signals"][k] = bool(v)
+    current["updated_at"] = datetime.datetime.utcnow().isoformat()
+    current["updated_by"] = user["username"]
+    s3_put(client, key, current)
+    return JSONResponse(_get_ueba_policy(target))
+
+
+@app.delete("/api/ueba-policy")
+async def clear_ueba_policy_override(site: Optional[str] = None, user=Depends(require_perm("settings"))):
+    target = _resolve_target_site(user, site)
+    if not target:
+        raise HTTPException(400, "Nothing to clear at the OEM-global layer")
+    client = s3(commander=True)
+    if client:
+        try:
+            client.delete_object(Bucket=ORACLE_BUCKET, Key=_site_override_key(UEBA_POLICY_KEY, target))
+        except Exception:
+            pass
+    return JSONResponse(_get_ueba_policy(target))
 
 
 @app.get("/api/retention-policy")

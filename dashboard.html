@@ -289,7 +289,7 @@ function esc(s){return(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace
 function eA(s){return(s||'').replace(/'/g,"\\'").replace(/"/g,'&quot;');}
 function sC(v){const s=(v||'').toUpperCase();return s==='CRITICAL'||s==='SEVERE'?'b-red':s==='HIGH'?'b-amber':s==='MEDIUM'?'b-blue':'b-muted';}
 function stC(s){return s==='New'?'b-red':s==='Open'?'b-amber':'b-muted';}
-function sI(s){return{defender:'&#x1F6E1;',playbook:'&#x1F4CB;',playbook_via_defender:'&#x1F517;'}[s]||'&#x2753;';}
+function sI(s){return{defender:'&#x1F6E1;',playbook:'&#x1F4CB;',playbook_via_defender:'&#x1F517;',ueba:'&#x1F9E0;'}[s]||'&#x2753;';}
 function rC(r){return r==='critical'||r==='high'?'b-red':r==='medium'?'b-blue':'b-muted';}
 
 async function api(p,o={}){
@@ -619,6 +619,22 @@ async function openDev(site,hostname){
 ${(invDev.groups||[]).length?`<div style="font-size:12px;margin-bottom:8px">Groups: ${invDev.groups.map(g=>`<span class="badge b-blue" style="margin-right:4px">${esc(g.name)}</span>`).join('')}</div>`:'<div style="font-size:11px;color:var(--muted);margin-bottom:8px">Not a member of any group</div>'}
 ${canS?`<div class="btn-row"><button class="btn btn-g" style="font-size:11px" onclick="saveDeviceMeta('${se}','${he}')">Save Classification</button><button class="btn btn-g" style="font-size:11px" onclick="goToDevicePolicy('${se}','${he}')">View/Override Policy</button></div>`:''}
 </div>
+${(()=>{
+  const excl=d.modules?.defender?.raw?.exclusions;
+  if(!excl)return '';
+  const nMissing=(excl.missing_paths?.length||0)+(excl.missing_extensions?.length||0)+(excl.missing_processes?.length||0);
+  const nUnauth=(excl.unauthorized_paths?.length||0)+(excl.unauthorized_extensions?.length||0)+(excl.unauthorized_processes?.length||0);
+  const nApproved=(excl.approved_paths?.length||0)+(excl.approved_extensions?.length||0)+(excl.approved_processes?.length||0);
+  return `<div class="prop" style="margin-bottom:14px">
+<div class="pl" style="margin-bottom:8px">Defender Scan Exclusions</div>
+<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:${nUnauth?'8':'0'}px">
+<span class="badge b-muted" style="font-size:10px">${nApproved} approved</span>
+${nMissing?`<span class="badge b-amber" style="font-size:10px">${nMissing} not yet applied</span>`:''}
+${nUnauth?`<span class="badge b-red" style="font-size:10px">${nUnauth} unauthorized</span>`:''}
+</div>
+${nUnauth?`<div style="font-size:11px;color:var(--muted)">Unauthorized exclusions found on this device are also raised as alerts. Manage the approved list under Settings &gt; Defender Scan Exclusions.</div>`:''}
+</div>`;
+})()}
 ${canC?`<div class="prop" style="margin-bottom:0">
 <div class="pl" style="margin-bottom:8px">Actions</div>
 <div class="btn-row">
@@ -650,14 +666,24 @@ ${cA?`<td class="iac"><button class="btn btn-g" style="font-size:10px;padding:3p
   _TL=d.timeline||[];_TLdev={site,hostname};_tlF='';_tlType='';_tlStart='';_tlEnd='';
   renderTimelineTab();
 
-  _BH=d.browsing_history||[];_bhF='';_BHdev={site,hostname};
+  _BH=d.browsing_history||[];_bhF='';_bhBrowser='';_bhUser='';_bhStart='';_bhEnd='';_BHdev={site,hostname};
   renderBrowsingHistoryTab();
 }
 
 // ── Device Browsing History tab: opt-in per-org snapshot (Chrome/Edge/
 // Firefox), kept entirely separate from the Timeline event stream — see
 // browser_history_collector.py and the Telemetry Policy settings card ──
-let _BH=[],_bhF='',_BHdev={site:'',hostname:''};
+let _BH=[],_bhF='',_bhBrowser='',_bhUser='',_bhStart='',_bhEnd='',_BHdev={site:'',hostname:''};
+
+function bhFiltered(){
+  let rows=_BH.slice();
+  if(_bhBrowser)rows=rows.filter(e=>e.browser===_bhBrowser);
+  if(_bhUser)rows=rows.filter(e=>e.user===_bhUser);
+  if(_bhF){const q=_bhF.toLowerCase();rows=rows.filter(e=>(e.url||'').toLowerCase().includes(q)||(e.title||'').toLowerCase().includes(q));}
+  if(_bhStart){const sd=new Date(_bhStart);rows=rows.filter(e=>{const d=pTS(e.visit_time);return d&&d>=sd;});}
+  if(_bhEnd){const ed=new Date(_bhEnd);rows=rows.filter(e=>{const d=pTS(e.visit_time);return d&&d<=ed;});}
+  return rows;
+}
 
 function renderBrowsingHistoryTab(){
   const sub=document.getElementById('sub-dbh');
@@ -669,15 +695,27 @@ function renderBrowsingHistoryTab(){
 </div>`;
     return;
   }
-  const q=_bhF.toLowerCase();
-  const rows=q?_BH.filter(e=>(e.url||'').toLowerCase().includes(q)||(e.title||'').toLowerCase().includes(q)||(e.user||'').toLowerCase().includes(q)):_BH;
+  const rows=bhFiltered();
+  const browsers=[...new Set(_BH.map(e=>e.browser).filter(Boolean))].sort();
+  const users=[...new Set(_BH.map(e=>e.user).filter(Boolean))].sort();
+  const active=_bhF||_bhBrowser||_bhUser||_bhStart||_bhEnd;
   const browserBadge=b=>({chrome:'b-amber',edge:'b-blue',firefox:'b-red'}[b]||'b-muted');
   sub.innerHTML=`<div class="filter-bar">
-<input class="fi" value="${esc(_bhF)}" placeholder="Search URL, title, or user..." style="width:260px" oninput="_bhF=this.value;renderBrowsingHistoryTab()">
+<input class="fi" value="${esc(_bhF)}" placeholder="Search URL or title..." style="width:220px" oninput="_bhF=this.value;renderBrowsingHistoryTab()">
+<select class="fs" onchange="_bhBrowser=this.value;renderBrowsingHistoryTab()">
+  <option value="">All browsers</option>${browsers.map(b=>`<option value="${esc(b)}" ${b===_bhBrowser?'selected':''}>${esc(b)}</option>`).join('')}
+</select>
+<select class="fs" onchange="_bhUser=this.value;renderBrowsingHistoryTab()">
+  <option value="">All users</option>${users.map(u=>`<option value="${esc(u)}" ${u===_bhUser?'selected':''}>${esc(u)}</option>`).join('')}
+</select>
+<input class="fi" type="datetime-local" value="${_bhStart}" onchange="_bhStart=this.value;renderBrowsingHistoryTab()" title="Start date/time">
+<span style="color:var(--muted);font-size:11px">&#8594;</span>
+<input class="fi" type="datetime-local" value="${_bhEnd}" onchange="_bhEnd=this.value;renderBrowsingHistoryTab()" title="End date/time">
+${active?`<button class="btn btn-g" style="font-size:11px" onclick="_bhF='';_bhBrowser='';_bhUser='';_bhStart='';_bhEnd='';renderBrowsingHistoryTab()">&#x2715; Clear</button>`:''}
 ${forceBtn('bh-force-st')}
-<div style="font-size:11px;color:var(--muted);margin-left:auto">${rows.length} of ${_BH.length} entries</div>
 </div>
 <div class="cmd-st" id="bh-force-st" style="font-size:11px;color:var(--muted);margin-bottom:4px;min-height:14px"></div>
+<div style="font-size:11px;color:var(--muted);margin-bottom:8px">${rows.length} of ${_BH.length} entries${active?' (filtered)':''}</div>
 <div class="table-wrap" style="max-height:420px;overflow-y:auto"><table><thead><tr><th>Visit Time</th><th>Browser</th><th>User</th><th>Title</th><th>URL</th><th>Visits</th></tr></thead>
 <tbody>${rows.map(e=>`<tr>
 <td style="font-size:11px;white-space:nowrap;color:var(--muted)">${fmtTS(e.visit_time)}</td>
@@ -686,7 +724,7 @@ ${forceBtn('bh-force-st')}
 <td style="font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:220px" title="${esc(e.title||'')}">${esc(e.title||'(no title)')}</td>
 <td style="font-size:11px;font-family:monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:280px" title="${esc(e.url||'')}"><a href="${esc(e.url||'#')}" target="_blank" rel="noopener" style="color:var(--cyan);text-decoration:none">${esc(e.url||'-')}</a></td>
 <td style="font-size:11px">${e.visit_count??'-'}</td>
-</tr>`).join('')||'<tr><td colspan="6" class="empty">No entries match your search</td></tr>'}</tbody></table></div>`;
+</tr>`).join('')||'<tr><td colspan="6" class="empty">No entries match your filters</td></tr>'}</tbody></table></div>`;
 }
 
 async function saveDeviceMeta(site,hostname){
@@ -706,7 +744,7 @@ function goToDevicePolicy(site,hostname){
 
 // ── Device Timeline tab: table view with type/content/date-range filters,
 // resizable columns, clickable rows (full detail modal) + CSV export ──
-let _TL=[],_TLdev={site:'',hostname:''},_tlF='',_tlType='',_tlStart='',_tlEnd='';
+let _TL=[],_TLdev={site:'',hostname:''},_tlF='',_tlType='',_tlStart='',_tlEnd='',_tlShowInternal=false;
 const TL_ICON={process_creation:'&#x2699;',logon:'&#x1F511;',logon_failure:'&#x26A0;',logoff:'&#x1F6AA;',service_installed:'&#x1F6E0;',service_crash:'&#x1F4A5;',threat_detected:'&#x1F6A8;',rule_match:'&#x1F4CB;',usb_execution:'&#x1F4BE;',suspicious_process:'&#x1F534;',network_connection:'&#x1F310;',defender:'&#x1F6E1;',dns_query:'&#x1F50D;'};
 const TL_COLOR={process_creation:'var(--blue)',logon:'var(--green)',logon_failure:'var(--red)',logoff:'var(--muted)',service_installed:'var(--amber)',service_crash:'var(--red)',threat_detected:'var(--red)',rule_match:'var(--amber)',usb_execution:'var(--amber)',suspicious_process:'var(--red)',network_connection:'var(--cyan)',defender:'var(--blue)',dns_query:'var(--cyan)'};
 const TL_SEARCH_FIELDS=['threat_name','process_name','command_line','path','user','parent_name','source_ip','remote_address','event_type'];
@@ -718,6 +756,14 @@ let _tlColW=null;
 
 function tlFiltered(){
   let rows=_TL.slice();
+  // Hidden by default: the agent's own PowerShell invocations (Defender/
+  // DNS/Threat/Timeline/Update modules all shell out to PowerShell every
+  // cycle) are correctly attributed to NT AUTHORITY\SYSTEM — genuinely
+  // accurate, but pure operational noise for a security review, and it
+  // can otherwise dominate the view and bury real user activity. See
+  // process_monitor.py's SME_INTERNAL_MARKER. Toggle "Show agent activity"
+  // to include it — useful for troubleshooting the agent itself.
+  if(!_tlShowInternal)rows=rows.filter(e=>!e.agent_internal);
   if(_tlType)rows=rows.filter(e=>(e.event_type||e.source||'event')===_tlType);
   if(_tlF){const q=_tlF.toLowerCase();rows=rows.filter(e=>TL_SEARCH_FIELDS.some(k=>(e[k]||'').toString().toLowerCase().includes(q)));}
   if(_tlStart){const sd=new Date(_tlStart);rows=rows.filter(e=>{const d=pTS(e.time);return d&&d>=sd;});}
@@ -737,15 +783,17 @@ ${_user?.perms?.includes('commands')?`<div style="margin-top:12px"><button class
   if(!_tlColW)_tlColW=Object.fromEntries(TL_COLS.map(c=>[c.key,c.w]));
   const rows=tlFiltered();
   const types=[...new Set(_TL.map(e=>e.event_type||e.source||'event'))].sort();
+  const internalCount=_TL.filter(e=>e.agent_internal).length;
   const active=_tlF||_tlType||_tlStart||_tlEnd;
   const tRow=e=>{
     const et=e.event_type||e.source||'event';const ic=TL_ICON[et]||'&#x25CF;';const co=TL_COLOR[et]||'var(--muted)';
     const desc=e.threat_name||e.process_name||e.query_name||e.user||'(event)';
     const detail=e.command_line||e.path||e.query_results||e.remote_address||e.parent_name||'';
     const user=e.user||'-';
-    return `<tr class="cr-row" onclick='oTE(${JSON.stringify(JSON.stringify(e))})'>
+    const dim=e.agent_internal?'opacity:.5;':'';
+    return `<tr class="cr-row" style="${dim}" onclick='oTE(${JSON.stringify(JSON.stringify(e))})'>
 <td style="font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--muted)">${fmtTS(e.time)}</td>
-<td style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:11px"><span style="color:${co}">${ic}</span> ${esc(et)}</td>
+<td style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:11px"><span style="color:${co}">${ic}</span> ${esc(et)}${e.agent_internal?' <span class="badge b-muted" style="font-size:9px;padding:1px 4px">agent</span>':''}</td>
 <td style="font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(desc)}">${esc(desc)}</td>
 <td style="font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${e.pid??'-'}</td>
 <td style="font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(user)}">${esc(user)}</td>
@@ -762,6 +810,9 @@ ${_user?.perms?.includes('commands')?`<div style="margin-top:12px"><button class
 <span style="color:var(--muted);font-size:11px">&#8594;</span>
 <input class="fi" type="datetime-local" value="${_tlEnd}" onchange="_tlEnd=this.value;renderTimelineTab()" title="End date/time">
 ${active?`<button class="btn btn-g" style="font-size:11px" onclick="_tlF='';_tlType='';_tlStart='';_tlEnd='';renderTimelineTab()">&#x2715; Clear</button>`:''}
+<label style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--muted);cursor:pointer;white-space:nowrap">
+<input type="checkbox" ${_tlShowInternal?'checked':''} onchange="_tlShowInternal=this.checked;renderTimelineTab()" style="accent-color:var(--blue)">
+Show agent activity (${internalCount})</label>
 ${_user?.perms?.includes('commands')?`<button class="btn btn-g" style="font-size:11px" onclick="cmd('${eA(_TLdev.site)}','${eA(_TLdev.hostname)}','force_timeline',this,'tl-force-st')">&#x21BA; Force Collection Now</button>`:''}
 <button class="btn btn-g" style="font-size:11px;margin-left:auto" onclick="exportTimelineCsv()">&#x2913; Export CSV</button>
 </div>
@@ -1026,12 +1077,17 @@ function togglePC(rowEl){
 }
 
 function renderAF(a,ctx){
-  const rel=ctx.related_events||[];const sib=ctx.sibling_alerts||[];const rule=ctx.rule_detail;const chain=ctx.process_chain||[];
+  const rel=ctx.related_events||[];const sib=ctx.sibling_alerts||[];const rule=ctx.rule_detail;const chain=ctx.process_chain||[];const brw=ctx.related_browsing||[];
   const relH=rel.length===0?'<div style="color:var(--muted);font-size:12px;padding:8px">No events in this window</div>':rel.map(e=>{const dv=e._delta_secs||0;return `<div class="tl-item">
 <div class="tl-dot" style="background:${dv<0?'var(--muted)':'var(--amber)'}"></div>
 <div class="tl-cnt"><div class="tl-t"><span style="font-family:monospace;color:${dv<0?'var(--muted)':'var(--amber)'}">${dv>0?'+':''}${dv}s</span> ${fmtTS(e.time)}</div>
 <div class="tl-e">${esc(e.process_name||e.threat_name||e.user||'(event)')} <span style="font-size:10px;color:var(--muted)">[${e.event_type||e.source}]</span></div>
 ${e.command_line?`<div class="tl-d">${esc(e.command_line.substring(0,120))}</div>`:''}</div></div>`;}).join('');
+  const brwH=brw.map(e=>{const dv=e._delta_secs||0;return `<div class="tl-item">
+<div class="tl-dot" style="background:${dv<0?'var(--muted)':'var(--cyan)'}"></div>
+<div class="tl-cnt"><div class="tl-t"><span style="font-family:monospace;color:${dv<0?'var(--muted)':'var(--cyan)'}">${dv>0?'+':''}${dv}s</span> ${fmtTS(e.visit_time)} <span style="font-size:10px;color:var(--muted)">[${esc(e.browser||'')}]</span></div>
+<div class="tl-e">${esc(e.title||'(no title)')}</div>
+<div class="tl-d" style="font-family:monospace">${esc((e.url||'').substring(0,120))}</div></div></div>`;}).join('');
   return renderAB(a)+`
 ${renderProcessChain(chain)}
 ${rule?`<div style="background:rgba(168,85,247,.07);border:1px solid rgba(168,85,247,.2);border-radius:8px;padding:10px;margin-top:10px">
@@ -1041,7 +1097,9 @@ ${sib.length?`<div style="background:rgba(245,158,11,.07);border:1px solid rgba(
 <div style="font-size:11px;font-weight:600;color:var(--amber);margin-bottom:5px">&#x26A0; ${sib.length} related alert(s) in same window</div>
 ${sib.map(s=>`<div style="display:flex;justify-content:space-between;font-size:11px;padding:3px 0"><span>${esc(s.threat_name||'?')}</span><span class="badge ${sC(s.severity)}">${s.severity}</span></div>`).join('')}</div>`:''}
 <div style="margin-top:14px"><div class="sec-title">&#x23F3; Related Events (&plusmn;${ctx.window_minutes||10} min)</div>
-<div class="scroll" style="max-height:180px">${relH}</div></div>`;
+<div class="scroll" style="max-height:180px">${relH}</div></div>
+${brw.length?`<div style="margin-top:14px"><div class="sec-title">&#x1F310; Related Browsing Activity (&plusmn;${ctx.window_minutes||10} min)</div>
+<div class="scroll" style="max-height:180px">${brwH}</div></div>`:''}`;
 }
 
 async function aiAnalyze(id){
@@ -1570,13 +1628,15 @@ async function renderSettings(el){
     const gr=await api(`/api/groups?site=${encodeURIComponent(effectiveSite)}`);
     if(gr.ok)_groupsCache=(await gr.json()).groups||[];
   }
-  const [r,ar,rp,ai,up,tp]=await Promise.all([api('/api/settings'+siteQS),api('/api/agent-schedule'+policyQS),api('/api/retention-policy'+policyQS),api('/api/ai-settings'),api('/api/update-policy'+policyQS),api('/api/telemetry-policy'+policyQS)]);
+  const [r,ar,rp,ai,up,tp,ub,ex]=await Promise.all([api('/api/settings'+siteQS),api('/api/agent-schedule'+policyQS),api('/api/retention-policy'+policyQS),api('/api/ai-settings'),api('/api/update-policy'+policyQS),api('/api/telemetry-policy'+policyQS),api('/api/ueba-policy'+siteQS),api('/api/exclusion-policy'+policyQS)]);
   const s=r.ok?await r.json():{};
   const a=ar.ok?await ar.json():{};
   const p=rp.ok?await rp.json():{};
   const ais=ai.ok?await ai.json():{};
   const upo=up.ok?await up.json():{};
   const tel=tp.ok?await tp.json():{};
+  const ueba=ub.ok?await ub.json():{};
+  const excl=ex.ok?await ex.json():{};
   const chk=(id,checked)=>`<input type="checkbox" id="${id}" ${checked?'checked':''} ${isAdmin?'':'disabled'} style="accent-color:var(--blue);width:14px;height:14px">`;
   const numRow=(id,label,val,note)=>`<div class="ff"><div class="fl">${label}</div><input id="${id}" class="fip" type="number" min="1" value="${val}" ${isAdmin?'':'disabled'}>${note?`<div style="font-size:11px;color:var(--muted);margin-top:3px">${note}</div>`:''}</div>`;
   const moduleRow=(chkId,checked,label,note,intervalHtml)=>`
@@ -1702,6 +1762,27 @@ ${upo.updated_at?`<div style="font-size:11px;color:var(--muted);margin-top:8px">
 </div>
 
 <div class="card">
+<div class="card-header"><div class="card-title">Defender Scan Exclusions</div>${layerChip(excl.is_site_override||excl.is_override,excl.scope_label)}</div>
+<div style="font-size:11px;color:var(--muted);margin-bottom:12px">Exclusions are a well-known malware-evasion technique &mdash; hiding a payload's folder from AV &mdash; so nothing here is a silent blind spot. Every audit cycle compares the device's ACTUAL exclusions against this approved list; anything present but not approved here becomes a <span class="badge b-red" style="font-size:10px">HIGH</span> alert, not just a compliance number.</div>
+${exemptRow(excl.exempt,'excl')}
+<label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;margin-bottom:14px;padding:8px;background:rgba(245,158,11,.06);border:1px solid rgba(245,158,11,.2);border-radius:6px">${chk('excl-remove-unauth',excl.remove_unauthorized===true)} Automatically remove unauthorized exclusions when Enforcement is ON for a device (otherwise they're only ever reported/alerted, never removed)</label>
+
+<div class="ff" style="margin-bottom:14px">
+<div class="fl">Approved Paths (one per line: <code>path | reason</code> &mdash; reason optional)</div>
+<textarea id="excl-paths" class="fip" rows="4" style="font-family:monospace;font-size:12px;resize:vertical" placeholder="C:\\Program Files\\PharmacyPOS\\data | POS software false-positives&#10;D:\\Backups | Backup staging area" ${isAdmin?'':'disabled'}>${(excl.paths||[]).map(e=>`${e.path}${e.reason?' | '+e.reason:''}`).join('\n')}</textarea>
+<div style="font-size:11px;color:var(--muted);margin-top:3px">Drive roots, the Windows folder, and bare wildcards are rejected automatically &mdash; they'd blind Defender almost entirely.</div>
+</div>
+<div class="grid2">
+<div class="ff"><div class="fl">Approved Extensions (one per line: <code>.ext | reason</code>)</div>
+<textarea id="excl-exts" class="fip" rows="3" style="font-family:monospace;font-size:12px;resize:vertical" placeholder=".pos | POS data files" ${isAdmin?'':'disabled'}>${(excl.extensions||[]).map(e=>`${e.extension}${e.reason?' | '+e.reason:''}`).join('\n')}</textarea></div>
+<div class="ff"><div class="fl">Approved Processes (one per line: <code>name.exe | reason</code>)</div>
+<textarea id="excl-procs" class="fip" rows="3" style="font-family:monospace;font-size:12px;resize:vertical" placeholder="backup-agent.exe | Nightly backup tool" ${isAdmin?'':'disabled'}>${(excl.processes||[]).map(e=>`${e.process}${e.reason?' | '+e.reason:''}`).join('\n')}</textarea></div>
+</div>
+${isAdmin?`<div class="btn-row" style="margin-top:14px"><button class="btn btn-p" onclick="saveExclusionPolicy()">Save Exclusion Policy</button>${inSiteContext&&(excl.is_site_override||excl.is_override)?'<button class="btn btn-g" onclick="clearExclusionPolicy()">Reset to Inherited Default</button>':''}</div>`:'<p style="font-size:12px;color:var(--muted);margin-top:10px">Requires Admin role.</p>'}
+${excl.updated_at?`<div style="font-size:11px;color:var(--muted);margin-top:8px">Last saved ${fmtAge(excl.updated_at)} by ${esc(excl.updated_by||'-')}</div>`:''}
+</div>
+
+<div class="card">
 <div class="card-header"><div class="card-title">Telemetry Policy</div>${layerChip(tel.is_site_override||tel.is_override,tel.scope_label)}</div>
 <div style="font-size:11px;color:var(--muted);margin-bottom:12px">DNS query capture and browsing history both surface what a device (and its user) has been doing online &mdash; both are <strong>off by default</strong> and require explicit opt-in here, unlike most other settings in this platform. Review your organization's monitoring/acceptable-use policy before enabling either.</div>
 ${exemptRow(tel.exempt,'tel')}
@@ -1716,6 +1797,30 @@ ${exemptRow(tel.exempt,'tel')}
 </div>
 ${isAdmin?`<div class="btn-row" style="margin-top:14px"><button class="btn btn-p" onclick="saveTelemetryPolicy()">Save Telemetry Policy</button>${inSiteContext&&(tel.is_site_override||tel.is_override)?'<button class="btn btn-g" onclick="clearTelemetryPolicy()">Reset to Inherited Default</button>':''}</div>`:'<p style="font-size:12px;color:var(--muted);margin-top:10px">Requires Admin role.</p>'}
 ${tel.updated_at?`<div style="font-size:11px;color:var(--muted);margin-top:8px">Last saved ${fmtAge(tel.updated_at)} by ${esc(tel.updated_by||'-')}</div>`:''}
+</div>
+
+<div class="card">
+<div class="card-header"><div class="card-title">UEBA / Behavioral Detection</div>${layerChip(ueba.is_site_override)}</div>
+<div style="font-size:11px;color:var(--muted);margin-bottom:12px">Learns a per-device baseline (process paths, parent/child process pairs, DNS domains, remote IPs, logon accounts, browsed domains) and raises an alert the first time something genuinely new shows up, once past the learning period below. <strong>Off by default</strong> &mdash; enabling this actively creates new alerts. Runs entirely server-side from data already on the Timeline/Browsing History tabs &mdash; no agent changes or restarts needed.</div>
+<label style="display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;cursor:pointer;margin-bottom:12px">${chk('ub-enabled',ueba.enabled===true)} Enable UEBA / Behavioral Detection</label>
+<div class="ff" style="margin-bottom:14px;max-width:280px">${numRow('ub-learn','Learning period (days)',ueba.learning_period_days??7,'New devices only build their baseline during this window &mdash; nothing is flagged until it passes, or every first-time action on a brand-new device would alert.')}</div>
+<div class="fl" style="margin-bottom:6px">Signals</div>
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:2px 16px;margin-bottom:14px">
+<label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;padding:4px 0">${chk('ub-s-path',ueba.signals?.new_process_path!==false)} New process path</label>
+<label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;padding:4px 0">${chk('ub-s-parent',ueba.signals?.new_parent_child!==false)} New parent/child process pair</label>
+<label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;padding:4px 0">${chk('ub-s-dns',ueba.signals?.new_dns_domain!==false)} New DNS domain</label>
+<label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;padding:4px 0">${chk('ub-s-ip',ueba.signals?.new_remote_ip!==false)} New remote IP</label>
+<label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;padding:4px 0">${chk('ub-s-user',ueba.signals?.new_logon_user!==false)} New logon user</label>
+<label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;padding:4px 0">${chk('ub-s-browse',ueba.signals?.new_browsing_domain!==false)} New browsed domain</label>
+</div>
+<label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;margin-bottom:8px">${chk('ub-s-hours',ueba.signals?.off_hours===true)} Off-hours activity</label>
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;max-width:360px;margin-bottom:8px">
+<div class="ff"><div class="fl">Business hours start</div><input id="ub-hours-start" class="fip" placeholder="08:00" value="${esc(ueba.off_hours?.start||'')}" ${isAdmin?'':'disabled'}></div>
+<div class="ff"><div class="fl">end</div><input id="ub-hours-end" class="fip" placeholder="18:00" value="${esc(ueba.off_hours?.end||'')}" ${isAdmin?'':'disabled'}></div>
+</div>
+<div style="font-size:11px;color:var(--muted);margin-bottom:14px">Anything outside this window counts as off-hours. Leave both blank to disable regardless of the toggle above.</div>
+${isAdmin?`<div class="btn-row"><button class="btn btn-p" onclick="saveUebaPolicy()">Save UEBA Policy</button>${inSiteContext&&ueba.is_site_override?'<button class="btn btn-g" onclick="clearUebaPolicy()">Reset to OEM Default</button>':''}</div>`:'<p style="font-size:12px;color:var(--muted)">Requires Admin role.</p>'}
+${ueba.updated_at?`<div style="font-size:11px;color:var(--muted);margin-top:8px">Last saved ${fmtAge(ueba.updated_at)} by ${esc(ueba.updated_by||'-')}</div>`:''}
 </div>
 
 <div class="card">
@@ -1953,6 +2058,37 @@ async function clearUpdatePolicy(){
   else{const d=await r.json().catch(()=>({detail:'Error'}));alert('Failed: '+d.detail);}
 }
 
+function parseExclLines(text,keyName){
+  return text.split('\n').map(l=>l.trim()).filter(Boolean).map(line=>{
+    const idx=line.indexOf('|');
+    const val=(idx>=0?line.slice(0,idx):line).trim();
+    const reason=idx>=0?line.slice(idx+1).trim():'';
+    return {[keyName]:val,reason};
+  }).filter(e=>e[keyName]);
+}
+
+async function saveExclusionPolicy(){
+  const gc=id=>!!document.getElementById(id)?.checked;
+  const gv=id=>document.getElementById(id)?.value||'';
+  const body={
+    remove_unauthorized:gc('excl-remove-unauth'),
+    paths:parseExclLines(gv('excl-paths'),'path'),
+    extensions:parseExclLines(gv('excl-exts'),'extension'),
+    processes:parseExclLines(gv('excl-procs'),'process'),
+  };
+  if(document.getElementById('excl-exempt'))body.exempt=gc('excl-exempt');
+  const r=await api('/api/exclusion-policy'+policyScopeQS(),{method:'PUT',body:JSON.stringify(body)});
+  if(r.ok){alert('Exclusion policy saved.');renderSettings(document.getElementById('content'));}
+  else{const d=await r.json().catch(()=>({detail:'Error'}));alert('Failed: '+d.detail);}
+}
+
+async function clearExclusionPolicy(){
+  if(!confirm('Revert to the inherited default Exclusion Policy? This layer\'s own overrides will be discarded.'))return;
+  const r=await api('/api/exclusion-policy'+policyScopeQS(),{method:'DELETE'});
+  if(r.ok)renderSettings(document.getElementById('content'));
+  else{const d=await r.json().catch(()=>({detail:'Error'}));alert('Failed: '+d.detail);}
+}
+
 async function saveTelemetryPolicy(){
   const gv=id=>document.getElementById(id)?.value;
   const gc=id=>!!document.getElementById(id)?.checked;
@@ -1969,6 +2105,33 @@ async function saveTelemetryPolicy(){
 async function clearTelemetryPolicy(){
   if(!confirm('Revert to the inherited default Telemetry Policy? This layer\'s own overrides will be discarded.'))return;
   const r=await api('/api/telemetry-policy'+policyScopeQS(),{method:'DELETE'});
+  if(r.ok)renderSettings(document.getElementById('content'));
+  else{const d=await r.json().catch(()=>({detail:'Error'}));alert('Failed: '+d.detail);}
+}
+
+async function saveUebaPolicy(){
+  const gv=id=>document.getElementById(id)?.value;
+  const gc=id=>!!document.getElementById(id)?.checked;
+  const start=(gv('ub-hours-start')||'').trim(),end=(gv('ub-hours-end')||'').trim();
+  const body={
+    enabled:gc('ub-enabled'),
+    learning_period_days:parseInt(gv('ub-learn'))||0,
+    off_hours:(start&&end)?{start,end}:null,
+    signals:{
+      new_process_path:gc('ub-s-path'), new_parent_child:gc('ub-s-parent'),
+      new_dns_domain:gc('ub-s-dns'), new_remote_ip:gc('ub-s-ip'),
+      new_logon_user:gc('ub-s-user'), new_browsing_domain:gc('ub-s-browse'),
+      off_hours:gc('ub-s-hours'),
+    },
+  };
+  const r=await api('/api/ueba-policy'+settingsSiteQS(),{method:'PUT',body:JSON.stringify(body)});
+  if(r.ok){alert('UEBA policy saved.');renderSettings(document.getElementById('content'));}
+  else{const d=await r.json().catch(()=>({detail:'Error'}));alert('Failed: '+d.detail);}
+}
+
+async function clearUebaPolicy(){
+  if(!confirm('Revert to the OEM default UEBA Policy? This organization\'s own overrides will be discarded.'))return;
+  const r=await api('/api/ueba-policy'+settingsSiteQS(),{method:'DELETE'});
   if(r.ok)renderSettings(document.getElementById('content'));
   else{const d=await r.json().catch(()=>({detail:'Error'}));alert('Failed: '+d.detail);}
 }
