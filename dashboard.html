@@ -1632,6 +1632,19 @@ async function renderSettings(el){
     const orgR=await api('/api/organizations');
     if(orgR.ok)_orgs=(await orgR.json()).organizations||[];
   }
+  const effectiveSite = isOem ? (_siteMode==='single' ? _siteCtx : null) : (_user?.site_name || null);
+  const siteQS = effectiveSite ? `?site=${encodeURIComponent(effectiveSite)}` : '';
+  const inSiteContext = !isOem || !!effectiveSite; // true = editing one org's layer, not the OEM default
+  const inDrillDown = !!(_settingsGroupCtx || _settingsHostCtx);
+  const policyQS = _settingsHostCtx && effectiveSite
+    ? `?site=${encodeURIComponent(effectiveSite)}&hostname=${encodeURIComponent(_settingsHostCtx)}`
+    : _settingsGroupCtx
+      ? `?group_id=${encodeURIComponent(_settingsGroupCtx)}`
+      : siteQS;
+  if(effectiveSite && !_groupsCache.length){
+    const gr=await api(`/api/groups?site=${encodeURIComponent(effectiveSite)}`);
+    if(gr.ok)_groupsCache=(await gr.json()).groups||[];
+  }
   const [r,ar,rp,ai,up,tp,ub,ex]=await Promise.all([api('/api/settings'+siteQS),api('/api/agent-schedule'+policyQS),api('/api/retention-policy'+policyQS),api('/api/ai-settings'),api('/api/update-policy'+policyQS),api('/api/telemetry-policy'+policyQS),api('/api/ueba-policy'+siteQS),api('/api/exclusion-policy'+policyQS)]);
   const s=r.ok?await r.json():{};
   const a=ar.ok?await ar.json():{};
@@ -1676,19 +1689,6 @@ ${_orgs.map(o=>`<label style="display:flex;align-items:center;gap:8px;font-size:
 </div>
 <div style="font-size:11px;color:var(--muted);margin-top:6px">${_siteMulti.size} selected &mdash; values below are shown from the OEM default as a starting template; saving pushes them to every organization checked above.</div>`:''}
 </div>` : '';
-  const effectiveSite = isOem ? (_siteMode==='single' ? _siteCtx : null) : (_user?.site_name || null);
-  const siteQS = effectiveSite ? `?site=${encodeURIComponent(effectiveSite)}` : '';
-  const inSiteContext = !isOem || !!effectiveSite; // true = editing one org's layer, not the OEM default
-  const inDrillDown = !!(_settingsGroupCtx || _settingsHostCtx);
-  const policyQS = _settingsHostCtx && effectiveSite
-    ? `?site=${encodeURIComponent(effectiveSite)}&hostname=${encodeURIComponent(_settingsHostCtx)}`
-    : _settingsGroupCtx
-      ? `?group_id=${encodeURIComponent(_settingsGroupCtx)}`
-      : siteQS;
-  if(effectiveSite && !_groupsCache.length){
-    const gr=await api(`/api/groups?site=${encodeURIComponent(effectiveSite)}`);
-    if(gr.ok)_groupsCache=(await gr.json()).groups||[];
-  }
   const devicesForSite = effectiveSite ? _D.filter(d=>d.site_name===effectiveSite) : [];
   const drillPicker = (_siteMode==='single' && inSiteContext && effectiveSite) ? `<div class="card" style="margin-bottom:-6px">
 <div class="fl" style="margin-bottom:6px">Agent Schedule / Retention / Update / Exclusion / Telemetry scope <span style="font-weight:400;color:var(--muted)">(Dashboard Settings above always applies at the organization level)</span></div>
