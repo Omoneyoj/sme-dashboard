@@ -278,6 +278,8 @@ let _charts={};
 let _siteCtx=null; // OEM admin's currently-selected org for Settings/Users (null = OEM-global / all orgs)
 let _orgs=[]; // cached organization list, oem_admin only
 let _settingsGroupCtx=null,_settingsGroupName='',_settingsHostCtx=null; // Settings page: group/device drill-down
+let _siteMode='oem',_siteMulti=new Set(); // Settings page: where a Save goes — 'oem' | 'single' | 'multi'
+let _settingsActiveTab='general'; // Settings page: which tab group is currently visible
 const PTITLES={overview:'Overview',inventory:'Inventory',alerts:'Alerts',apps:'App Inventory',enforcement:'Enforcement',updates:'Updates',rules:'Detection Rules',users:'User Management',settings:'Settings',orgs:'Organizations',groups:'Asset Groups'};
 
 function pTS(s){if(!s)return null;const hasTz=/Z$|[+-]\d{2}:\d{2}$/.test(s);const d=new Date(hasTz?s:s+'Z');return isNaN(d)?null:d;}
@@ -513,8 +515,10 @@ ${canC?`<div class="btn-row" style="margin-bottom:14px"><button class="btn btn-g
   const sigBadge=(sigAge===null||sigAge===undefined)?'<span class="badge b-muted">No data</span>':
     `<span class="badge ${u.signature_compliant?'b-green':'b-red'}">${Number(sigAge).toFixed(1)}h</span>`;
   const wuPending=u.wu_pending_count;
+  const wuTitles=(u.wu_pending_titles||[]).join('; ');
+  const wuTip=wuTitles?` title="${esc(wuTitles)}${(u.wu_pending_count||0)>(u.wu_pending_titles||[]).length?' (+more)':''}"`:'';
   const wuBadge=(wuPending===null||wuPending===undefined)?'<span class="badge b-muted">No data</span>':
-    `<span class="badge ${u.wu_critical_count>0?'b-red':wuPending>0?'b-amber':'b-green'}">${wuPending} pending${u.wu_critical_count?` (${u.wu_critical_count} critical)`:''}</span>`;
+    `<span class="badge ${u.wu_critical_count>0?'b-red':wuPending>0?'b-amber':'b-green'}"${wuTip} style="${wuTitles?'cursor:help':''}">${wuPending} pending${u.wu_critical_count?` (${u.wu_critical_count} critical)`:''}</span>`;
   const rebootBadge=u.wu_pending_reboot===true?'<span class="badge b-amber">Pending</span>':
     (u.wu_pending_reboot===false?'<span class="badge b-green">No</span>':'<span class="badge b-muted">-</span>');
   const appBadge=(u.app_upgrade_count===null||u.app_upgrade_count===undefined)?'<span class="badge b-muted">No data</span>':
@@ -633,6 +637,22 @@ ${nMissing?`<span class="badge b-amber" style="font-size:10px">${nMissing} not y
 ${nUnauth?`<span class="badge b-red" style="font-size:10px">${nUnauth} unauthorized</span>`:''}
 </div>
 ${nUnauth?`<div style="font-size:11px;color:var(--muted)">Unauthorized exclusions found on this device are also raised as alerts. Manage the approved list under Settings &gt; Defender Scan Exclusions.</div>`:''}
+</div>`;
+})()}
+${(()=>{
+  const wu=d.modules?.updates?.raw?.windows_updates;
+  const pending=wu?.pending_updates;
+  if(!pending||!pending.length)return '';
+  return `<div class="prop" style="margin-bottom:14px">
+<div class="pl" style="margin-bottom:8px">Pending Windows Updates (${pending.length}${wu.pending_count>pending.length?` of ${wu.pending_count}`:''})</div>
+<div style="display:flex;flex-direction:column;gap:6px">
+${pending.map(u=>`<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;font-size:12px;padding:6px 8px;background:var(--surface2);border-radius:6px">
+<div style="min-width:0"><div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(u.title||'')}">${esc(u.title||'(untitled update)')}</div>
+<div style="font-size:10px;color:var(--muted)">${u.kb?'KB'+esc(u.kb)+' &middot; ':''}${u.size_mb?esc(String(u.size_mb))+' MB':''}${u.reboot_required?' &middot; Reboot required':''}</div></div>
+<span class="badge ${u.severity==='Critical'?'b-red':u.severity==='Important'?'b-amber':'b-muted'}" style="flex-shrink:0">${esc(u.severity||'Unspecified')}</span>
+</div>`).join('')}
+</div>
+<div style="font-size:11px;color:var(--muted);margin-top:6px">Auto-install requires Enforcement ON for this device and the severity approved under Settings &gt; Update Policy.</div>
 </div>`;
 })()}
 ${canC?`<div class="prop" style="margin-bottom:0">
@@ -1600,33 +1620,17 @@ function goToGroupPolicy(group_id,group_name){
 async function renderSettings(el){
   const isAdmin=_user?.perms?.includes('settings');
   const isOem=_user?.role==='oem_admin';
-  // For an oem_admin, _siteCtx (set via the Organizations page's
-  // "Settings" button, the picker below, or a Group's "Policy" button)
-  // selects which org's layer to view/edit: null = the OEM-global
-  // default. A site-scoped admin always edits their own org — the
-  // backend enforces this regardless of any site param.
-  //
-  // Within an org, _settingsGroupCtx / _settingsHostCtx drill one layer
-  // deeper still (Agent Schedule / Retention / Update Policy only — the
-  // Dashboard Settings and AI cards stay site/global-only, there's no
-  // per-device "offline threshold"). Only one of the two is ever active;
-  // picking a device clears any group selection and vice versa.
-  const effectiveSite = isOem ? _siteCtx : (_user?.site_name || null);
-  const siteQS = isOem && _siteCtx ? `?site=${encodeURIComponent(_siteCtx)}` : '';
-  const inSiteContext = !isOem || !!_siteCtx; // true = editing one org's layer, not the OEM default
-  const inDrillDown = !!(_settingsGroupCtx || _settingsHostCtx);
-  const policyQS = _settingsHostCtx && effectiveSite
-    ? `?site=${encodeURIComponent(effectiveSite)}&hostname=${encodeURIComponent(_settingsHostCtx)}`
-    : _settingsGroupCtx
-      ? `?group_id=${encodeURIComponent(_settingsGroupCtx)}`
-      : siteQS;
+  // For an oem_admin, _siteMode/_siteCtx/_siteMulti (set via the picker
+  // below, the Organizations page's "Settings" button, or a Group's
+  // "Policy" button) select where a Save actually goes: the OEM-global
+  // default, one specific org, or a checked list of several at once.
+  // _settingsGroupCtx / _settingsHostCtx drill one layer deeper still,
+  // only available in single-org mode (Agent Schedule / Retention /
+  // Update / Exclusion / Telemetry Policy — Dashboard Settings and AI
+  // stay site/global-only, there's no per-device "offline threshold").
   if(isOem && !_orgs.length){
     const orgR=await api('/api/organizations');
     if(orgR.ok)_orgs=(await orgR.json()).organizations||[];
-  }
-  if(effectiveSite && !_groupsCache.length){
-    const gr=await api(`/api/groups?site=${encodeURIComponent(effectiveSite)}`);
-    if(gr.ok)_groupsCache=(await gr.json()).groups||[];
   }
   const [r,ar,rp,ai,up,tp,ub,ex]=await Promise.all([api('/api/settings'+siteQS),api('/api/agent-schedule'+policyQS),api('/api/retention-policy'+policyQS),api('/api/ai-settings'),api('/api/update-policy'+policyQS),api('/api/telemetry-policy'+policyQS),api('/api/ueba-policy'+siteQS),api('/api/exclusion-policy'+policyQS)]);
   const s=r.ok?await r.json():{};
@@ -1659,20 +1663,43 @@ async function renderSettings(el){
       : `<span class="badge b-muted" style="font-size:10px">${orgLabel} (inheriting OEM default)</span>`;
   };
   const exemptRow=(exempt,cardKey)=>inSiteContext&&inDrillDown?`<label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;margin-bottom:10px;padding:8px;background:rgba(239,68,68,.06);border:1px solid rgba(239,68,68,.2);border-radius:6px">${chk(`${cardKey}-exempt`,!!exempt)} Exempt this ${_settingsHostCtx?'device':'group'} entirely from this policy</label>`:'';
+  const modeBtn=(m,label)=>`<button class="btn ${_siteMode===m?'btn-p':'btn-g'}" style="font-size:12px" onclick="_siteMode='${m}';_siteCtx=null;_settingsGroupCtx=null;_settingsHostCtx=null;renderSettings(document.getElementById('content'))">${label}</button>`;
   const sitePicker = isOem ? `<div class="card" style="margin-bottom:-6px">
-<div class="fl" style="margin-bottom:6px">Editing settings for</div>
-<select class="fsel" onchange="_siteCtx=this.value||null;_settingsGroupCtx=null;_settingsHostCtx=null;_groupsCache=[];renderSettings(document.getElementById('content'))">
-<option value="" ${!_siteCtx?'selected':''}>OEM Default (applies to every org unless overridden)</option>
+<div class="fl" style="margin-bottom:8px">Where should new saves go?</div>
+<div class="btn-row" style="margin-bottom:10px">${modeBtn('oem','OEM Default')}${modeBtn('single','One Organization')}${modeBtn('multi','Multiple Organizations')}</div>
+${_siteMode==='single'?`<select class="fsel" onchange="_siteCtx=this.value||null;_groupsCache=[];renderSettings(document.getElementById('content'))">
+<option value="">Select an organization&hellip;</option>
 ${_orgs.map(o=>`<option value="${esc(o.site_name)}" ${o.site_name===_siteCtx?'selected':''}>${esc(o.display_name)}</option>`).join('')}
-</select></div>` : '';
+</select>`:''}
+${_siteMode==='multi'?`<div style="max-height:160px;overflow-y:auto;background:var(--surface2);border-radius:8px;padding:8px">
+${_orgs.map(o=>`<label style="display:flex;align-items:center;gap:8px;font-size:12px;padding:4px 0;cursor:pointer"><input type="checkbox" class="site-multi-cb" ${_siteMulti.has(o.site_name)?'checked':''} onchange="this.checked?_siteMulti.add('${eA(o.site_name)}'):_siteMulti.delete('${eA(o.site_name)}')"> ${esc(o.display_name)}</label>`).join('')||'<div style="font-size:12px;color:var(--muted)">No organizations onboarded yet</div>'}
+</div>
+<div style="font-size:11px;color:var(--muted);margin-top:6px">${_siteMulti.size} selected &mdash; values below are shown from the OEM default as a starting template; saving pushes them to every organization checked above.</div>`:''}
+</div>` : '';
+  const effectiveSite = isOem ? (_siteMode==='single' ? _siteCtx : null) : (_user?.site_name || null);
+  const siteQS = effectiveSite ? `?site=${encodeURIComponent(effectiveSite)}` : '';
+  const inSiteContext = !isOem || !!effectiveSite; // true = editing one org's layer, not the OEM default
+  const inDrillDown = !!(_settingsGroupCtx || _settingsHostCtx);
+  const policyQS = _settingsHostCtx && effectiveSite
+    ? `?site=${encodeURIComponent(effectiveSite)}&hostname=${encodeURIComponent(_settingsHostCtx)}`
+    : _settingsGroupCtx
+      ? `?group_id=${encodeURIComponent(_settingsGroupCtx)}`
+      : siteQS;
+  if(effectiveSite && !_groupsCache.length){
+    const gr=await api(`/api/groups?site=${encodeURIComponent(effectiveSite)}`);
+    if(gr.ok)_groupsCache=(await gr.json()).groups||[];
+  }
   const devicesForSite = effectiveSite ? _D.filter(d=>d.site_name===effectiveSite) : [];
-  const drillPicker = (inSiteContext && effectiveSite) ? `<div class="card" style="margin-bottom:-6px">
-<div class="fl" style="margin-bottom:6px">Agent Schedule / Retention / Update Policy scope <span style="font-weight:400;color:var(--muted)">(Dashboard Settings above always applies at the organization level)</span></div>
+  const drillPicker = (_siteMode==='single' && inSiteContext && effectiveSite) ? `<div class="card" style="margin-bottom:-6px">
+<div class="fl" style="margin-bottom:6px">Agent Schedule / Retention / Update / Exclusion / Telemetry scope <span style="font-weight:400;color:var(--muted)">(Dashboard Settings above always applies at the organization level)</span></div>
 <select class="fsel" onchange="const v=this.value;if(v.startsWith('g:')){_settingsGroupCtx=v.slice(2);_settingsHostCtx=null;}else if(v.startsWith('h:')){_settingsHostCtx=v.slice(2);_settingsGroupCtx=null;}else{_settingsGroupCtx=null;_settingsHostCtx=null;}renderSettings(document.getElementById('content'))">
 <option value="" ${!inDrillDown?'selected':''}>Whole Organization</option>
 ${_groupsCache.length?`<optgroup label="Groups">${_groupsCache.map(g=>`<option value="g:${esc(g.id)}" ${g.id===_settingsGroupCtx?'selected':''}>${esc(g.name)}</option>`).join('')}</optgroup>`:''}
 ${devicesForSite.length?`<optgroup label="Devices">${devicesForSite.map(d=>`<option value="h:${esc(d.hostname)}" ${d.hostname===_settingsHostCtx?'selected':''}>${esc(d.hostname)}</option>`).join('')}</optgroup>`:''}
 </select></div>` : '';
+  const settingsTabs=[{id:'general',label:'General'},{id:'agent',label:'Agent Schedule'},{id:'security',label:'Security Policies'},{id:'telemetry',label:'Telemetry &amp; UEBA'}];
+  if(isOem)settingsTabs.push({id:'ai',label:'AI Analysis'});
+  const tabBar=`<div class="stabs">${settingsTabs.map(t=>`<button class="stab ${_settingsActiveTab===t.id?'active':''}" data-stab-btn="settings" data-tabid="${t.id}" onclick="switchSettingsTab('${t.id}')">${t.label}</button>`).join('')}</div>`;
 
   // ── Retention Policy card pieces ──
   const dest=p.move_destination||{};
@@ -1687,7 +1714,8 @@ ${devicesForSite.length?`<optgroup label="Devices">${devicesForSite.map(d=>`<opt
   el.innerHTML=`<div style="display:flex;flex-direction:column;gap:20px;max-width:640px">
 ${sitePicker}
 ${drillPicker}
-<div class="card">
+${tabBar}
+<div class="card" id="stg-general">
 <div class="card-header"><div class="card-title">Dashboard Settings</div>${layerChip(s.is_site_override)}</div>
 <div style="display:flex;flex-direction:column;gap:14px">
 <div class="ff"><div class="fl">Organisation Name</div><input id="so" class="fip" value="${esc(s.org_name||'')}" placeholder="Sunrise Pharmacy Group"></div>
@@ -1698,7 +1726,7 @@ ${drillPicker}
 ${isAdmin?`<div class="btn-row"><button class="btn btn-p" onclick="saveSets()">Save Settings</button>${inSiteContext&&s.is_site_override?'<button class="btn btn-g" onclick="clearSets()">Reset to OEM Default</button>':''}</div>`:'<p style="font-size:12px;color:var(--muted)">Requires Admin role.</p>'}
 </div></div>
 
-<div class="card">
+<div class="card" id="stg-agent">
 <div class="card-header"><div class="card-title">Endpoint Agent Schedule</div>${layerChip(a.is_site_override||a.is_override,a.scope_label)}</div>
 <div style="font-size:11px;color:var(--muted);margin-bottom:8px">Applies to every installed SMESecurityAgent service. Changes are picked up live by each PC (no reinstall or restart) &mdash; typically within one Command Executor cycle.</div>
 ${exemptRow(a.exempt,'ag')}
@@ -1719,7 +1747,7 @@ ${isAdmin?`<div class="btn-row" style="margin-top:14px"><button class="btn btn-p
 ${a.updated_at?`<div style="font-size:11px;color:var(--muted);margin-top:8px">Last saved ${fmtAge(a.updated_at)} by ${esc(a.updated_by||'-')}</div>`:''}
 </div>
 
-<div class="card">
+<div class="card" id="stg-security-1">
 <div class="card-header"><div class="card-title">Update Policy</div>${layerChip(upo.is_site_override||upo.is_override,upo.scope_label)}</div>
 <div style="font-size:11px;color:var(--muted);margin-bottom:12px">Controls Defender signature freshness, Windows Update, and third-party app updates via winget for every device. See the Updates tab for live per-device status.</div>
 ${exemptRow(upo.exempt,'up')}
@@ -1761,7 +1789,7 @@ ${isAdmin?`<div class="btn-row" style="margin-top:14px"><button class="btn btn-p
 ${upo.updated_at?`<div style="font-size:11px;color:var(--muted);margin-top:8px">Last saved ${fmtAge(upo.updated_at)} by ${esc(upo.updated_by||'-')}</div>`:''}
 </div>
 
-<div class="card">
+<div class="card" id="stg-security-2">
 <div class="card-header"><div class="card-title">Defender Scan Exclusions</div>${layerChip(excl.is_site_override||excl.is_override,excl.scope_label)}</div>
 <div style="font-size:11px;color:var(--muted);margin-bottom:12px">Exclusions are a well-known malware-evasion technique &mdash; hiding a payload's folder from AV &mdash; so nothing here is a silent blind spot. Every audit cycle compares the device's ACTUAL exclusions against this approved list; anything present but not approved here becomes a <span class="badge b-red" style="font-size:10px">HIGH</span> alert, not just a compliance number.</div>
 ${exemptRow(excl.exempt,'excl')}
@@ -1782,7 +1810,7 @@ ${isAdmin?`<div class="btn-row" style="margin-top:14px"><button class="btn btn-p
 ${excl.updated_at?`<div style="font-size:11px;color:var(--muted);margin-top:8px">Last saved ${fmtAge(excl.updated_at)} by ${esc(excl.updated_by||'-')}</div>`:''}
 </div>
 
-<div class="card">
+<div class="card" id="stg-telemetry-1">
 <div class="card-header"><div class="card-title">Telemetry Policy</div>${layerChip(tel.is_site_override||tel.is_override,tel.scope_label)}</div>
 <div style="font-size:11px;color:var(--muted);margin-bottom:12px">DNS query capture and browsing history both surface what a device (and its user) has been doing online &mdash; both are <strong>off by default</strong> and require explicit opt-in here, unlike most other settings in this platform. Review your organization's monitoring/acceptable-use policy before enabling either.</div>
 ${exemptRow(tel.exempt,'tel')}
@@ -1799,7 +1827,7 @@ ${isAdmin?`<div class="btn-row" style="margin-top:14px"><button class="btn btn-p
 ${tel.updated_at?`<div style="font-size:11px;color:var(--muted);margin-top:8px">Last saved ${fmtAge(tel.updated_at)} by ${esc(tel.updated_by||'-')}</div>`:''}
 </div>
 
-<div class="card">
+<div class="card" id="stg-telemetry-2">
 <div class="card-header"><div class="card-title">UEBA / Behavioral Detection</div>${layerChip(ueba.is_site_override)}</div>
 <div style="font-size:11px;color:var(--muted);margin-bottom:12px">Learns a per-device baseline (process paths, parent/child process pairs, DNS domains, remote IPs, logon accounts, browsed domains) and raises an alert the first time something genuinely new shows up, once past the learning period below. <strong>Off by default</strong> &mdash; enabling this actively creates new alerts. Runs entirely server-side from data already on the Timeline/Browsing History tabs &mdash; no agent changes or restarts needed.</div>
 <label style="display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;cursor:pointer;margin-bottom:12px">${chk('ub-enabled',ueba.enabled===true)} Enable UEBA / Behavioral Detection</label>
@@ -1823,7 +1851,7 @@ ${isAdmin?`<div class="btn-row"><button class="btn btn-p" onclick="saveUebaPolic
 ${ueba.updated_at?`<div style="font-size:11px;color:var(--muted);margin-top:8px">Last saved ${fmtAge(ueba.updated_at)} by ${esc(ueba.updated_by||'-')}</div>`:''}
 </div>
 
-<div class="card">
+<div class="card" id="stg-security-3">
 <div class="card-header"><div class="card-title">Retention Policy</div>${layerChip(p.is_site_override||p.is_override,p.scope_label)}</div>
 <div style="font-size:11px;color:var(--muted);margin-bottom:10px">Controls what happens to old data. Disabled by default &mdash; nothing is ever deleted or moved until an admin turns this on, mirroring how enforcement actions work elsewhere in this platform.${inDrillDown?' At group/device level, only the endpoint-side fields (logs/quarantine) are meaningful &mdash; cloud sweeps always run per organization.':''}</div>
 ${exemptRow(p.exempt,'rp')}
@@ -1881,7 +1909,7 @@ ${p.updated_at?`<div style="font-size:11px;color:var(--muted);margin-top:8px">La
 ${!inDrillDown?(lr?`<div style="font-size:11px;color:var(--muted);margin-top:8px">Last cloud sweep: ${fmtAge(lr.ran_at)} (${esc(lr.trigger||'-')}, ${esc(lr.status||'-')})${lrSummary?`<div style="margin-top:4px">${lrSummary}</div>`:''}</div>`:'<div style="font-size:11px;color:var(--muted);margin-top:8px">No cloud sweep has run yet.</div>'):''}
 </div>
 
-${isOem?`<div class="card">
+${isOem?`<div class="card" id="stg-ai">
 <div class="card-header"><div class="card-title">AI Analysis</div></div>
 <div style="font-size:11px;color:var(--muted);margin-bottom:10px">OEM-wide only &mdash; the model and API key apply to every organization's "Analyze with AI" alike (it's a shared billing credential, not something delegated per-org). Controls which Claude model powers alert analysis, and where the API key comes from. If nothing's saved here, the platform falls back to the <code>ANTHROPIC_API_KEY</code> environment variable on Render (if set) &mdash; a key saved here always takes priority.</div>
 <div class="ff" style="margin-bottom:6px">
@@ -1906,6 +1934,23 @@ ${isAdmin?'<button class="btn btn-p" onclick="saveAiSettings()">Save AI Settings
 ${ais.updated_at?`<div style="font-size:11px;color:var(--muted);margin-top:8px">Last saved ${fmtAge(ais.updated_at)} by ${esc(ais.updated_by||'-')}</div>`:''}
 </div>`:''}
 </div>`;
+  switchSettingsTab(_settingsActiveTab);
+}
+
+function switchSettingsTab(tabId){
+  _settingsActiveTab=tabId;
+  const TAB_CARDS={general:['stg-general'],agent:['stg-agent'],
+    security:['stg-security-1','stg-security-2','stg-security-3'],
+    telemetry:['stg-telemetry-1','stg-telemetry-2'],ai:['stg-ai']};
+  document.querySelectorAll('[data-stab-btn="settings"]').forEach(b=>{
+    b.classList.toggle('active',b.dataset.tabid===tabId);
+  });
+  Object.entries(TAB_CARDS).forEach(([tab,ids])=>{
+    ids.forEach(id=>{
+      const elx=document.getElementById(id);
+      if(elx)elx.style.display=(tab===tabId)?'':'none';
+    });
+  });
 }
 
 function tglAisCustom(){
@@ -1933,29 +1978,88 @@ function tglRpDest(){
 }
 
 function settingsSiteQS(){
-  // Used by /api/settings only (Dashboard Settings card — org/global scope
-  // exclusively, no group/device drill-down). Only an oem_admin's explicit
-  // drill-down (_siteCtx) needs a ?site= param — a site-scoped admin's own
-  // writes are pinned to their own org by the backend regardless.
-  return _user?.role==='oem_admin' && _siteCtx ? `?site=${encodeURIComponent(_siteCtx)}` : '';
+  // Used by /api/retention-policy/run-now only now (a live action, not a
+  // "save" — running a sweep across many orgs at once isn't extended to
+  // multi-select in this version). Only an oem_admin's single-org
+  // selection needs a ?site= param — a site-scoped admin's own actions
+  // are pinned to their own org by the backend regardless.
+  const effectiveSite = _user?.role==='oem_admin' ? (_siteMode==='single' ? _siteCtx : null) : null;
+  return effectiveSite ? `?site=${encodeURIComponent(effectiveSite)}` : '';
 }
 
 function policyScopeQS(){
-  // Used by /api/agent-schedule, /api/retention-policy, /api/update-policy
-  // — these three support the full group/device drill-down on top of
-  // site/global. Mirrors renderSettings' own policyQS computation exactly;
-  // kept in sync so what you see is what gets saved.
+  // Used ONLY for the group/device drill-down case (see
+  // saveLayeredPolicy) — the drill-down picker only ever renders in
+  // single-org mode, so _siteCtx already reflects the right org here.
   const effectiveSite = _user?.role==='oem_admin' ? _siteCtx : (_user?.site_name||null);
   if(_settingsHostCtx && effectiveSite)return `?site=${encodeURIComponent(effectiveSite)}&hostname=${encodeURIComponent(_settingsHostCtx)}`;
   if(_settingsGroupCtx)return `?group_id=${encodeURIComponent(_settingsGroupCtx)}`;
-  return settingsSiteQS();
+  return effectiveSite ? `?site=${encodeURIComponent(effectiveSite)}` : '';
+}
+
+function currentTargetSites(){
+  // Returns the array of site_name values (or [null] for the OEM-global
+  // layer) a policy Save should be pushed to when NOT drilled into a
+  // specific group/device — see saveLayeredPolicy.
+  if(_user?.role!=='oem_admin')return [_user?.site_name||null];
+  if(_siteMode==='oem')return [null];
+  if(_siteMode==='single')return _siteCtx?[_siteCtx]:[];
+  if(_siteMode==='multi')return [..._siteMulti];
+  return [null];
+}
+
+async function saveLayeredPolicy(urlBase,body){
+  // Shared by every policy card's Save button (Dashboard Settings, Agent
+  // Schedule, Retention, Update, Exclusion, Telemetry, UEBA). A drilled-
+  // into group/device is always one exact layer regardless of site mode.
+  // Otherwise this pushes the SAME body to every target currentTargetSites()
+  // resolves, one API call each — "Multiple Organizations" mode is a
+  // genuine bulk-apply, not just a UI label.
+  if(_settingsGroupCtx||_settingsHostCtx){
+    const r=await api(urlBase+policyScopeQS(),{method:'PUT',body:JSON.stringify(body)});
+    if(r.ok)return{ok:1,fail:0,detail:[]};
+    const d=await r.json().catch(()=>({detail:'Error'}));
+    return{ok:0,fail:1,detail:[d.detail]};
+  }
+  const targets=currentTargetSites();
+  if(!targets.length){alert('Select at least one organization first.');return null;}
+  let ok=0,fail=0,detail=[];
+  for(const site of targets){
+    const qs=site?`?site=${encodeURIComponent(site)}`:'';
+    try{
+      const r=await api(urlBase+qs,{method:'PUT',body:JSON.stringify(body)});
+      if(r.ok)ok++;else{fail++;const d=await r.json().catch(()=>({detail:'Error'}));detail.push(`${site||'OEM Default'}: ${d.detail}`);}
+    }catch(ex){fail++;detail.push(`${site||'OEM Default'}: ${ex}`);}
+  }
+  return{ok,fail,detail};
+}
+
+function reportSaveResult(result,label){
+  if(!result)return false;
+  if(result.fail===0)alert(`${label} saved to ${result.ok} target${result.ok===1?'':'s'}.`);
+  else alert(`${label}: saved to ${result.ok}, failed for ${result.fail}:\n${result.detail.join('\n')}`);
+  return true;
 }
 
 async function saveSets(){
   const body={org_name:document.getElementById('so')?.value?.trim(),offline_threshold_hours:parseInt(document.getElementById('soh')?.value)||1,offline_days_warning:parseInt(document.getElementById('sow')?.value)||7,mttd_target_minutes:parseInt(document.getElementById('sm')?.value)||30,mttr_target_minutes:parseInt(document.getElementById('smt')?.value)||120};
-  const r=await api('/api/settings'+settingsSiteQS(),{method:'PUT',body:JSON.stringify(body)});
-  if(r.ok){if(_user?.role!=='oem_admin'||!_siteCtx)document.getElementById('org-name').textContent=body.org_name||'SME Security';alert('Saved!');renderSettings(document.getElementById('content'));}
-  else{const d=await r.json().catch(()=>({detail:'Error'}));alert('Failed: '+d.detail);}
+  // Dashboard Settings never supports group/device drill-down (there's no
+  // per-device "offline threshold"), so this always saves at the
+  // OEM/site level via currentTargetSites() regardless of whether a
+  // group/device happens to be drilled into on another card.
+  const targets=currentTargetSites();
+  if(!targets.length){alert('Select at least one organization first.');return;}
+  let ok=0,fail=0,detail=[];
+  for(const site of targets){
+    const qs=site?`?site=${encodeURIComponent(site)}`:'';
+    try{
+      const r=await api('/api/settings'+qs,{method:'PUT',body:JSON.stringify(body)});
+      if(r.ok)ok++;else{fail++;const d=await r.json().catch(()=>({detail:'Error'}));detail.push(`${site||'OEM Default'}: ${d.detail}`);}
+    }catch(ex){fail++;detail.push(`${site||'OEM Default'}: ${ex}`);}
+  }
+  if(ok&&(_user?.role!=='oem_admin'||_siteMode!=='multi'))document.getElementById('org-name').textContent=body.org_name||'SME Security';
+  reportSaveResult({ok,fail,detail},'Dashboard Settings');
+  renderSettings(document.getElementById('content'));
 }
 
 async function clearSets(){
@@ -1978,9 +2082,8 @@ async function saveAgentSchedule(){
     command_executor_enabled:gc('ag-cmd'),command_executor_interval_minutes:parseInt(gv('ag-cmd-m'))||5,
   };
   if(document.getElementById('ag-exempt'))body.exempt=gc('ag-exempt');
-  const r=await api('/api/agent-schedule'+policyScopeQS(),{method:'PUT',body:JSON.stringify(body)});
-  if(r.ok){alert('Agent schedule saved! Endpoint agents will pick this up within one Command Executor cycle.');renderSettings(document.getElementById('content'));}
-  else{const d=await r.json().catch(()=>({detail:'Error'}));alert('Failed: '+d.detail);}
+  const result=await saveLayeredPolicy('/api/agent-schedule',body);
+  if(reportSaveResult(result,'Agent Schedule'))renderSettings(document.getElementById('content'));
 }
 
 async function clearAgentSchedule(){
@@ -2012,9 +2115,8 @@ async function saveRetention(){
     },
   };
   if(document.getElementById('rp-exempt'))body.exempt=gc('rp-exempt');
-  const r=await api('/api/retention-policy'+policyScopeQS(),{method:'PUT',body:JSON.stringify(body)});
-  if(r.ok){alert('Retention policy saved.');renderSettings(document.getElementById('content'));}
-  else{const d=await r.json().catch(()=>({detail:'Error'}));alert('Failed: '+d.detail);}
+  const result=await saveLayeredPolicy('/api/retention-policy',body);
+  if(reportSaveResult(result,'Retention Policy'))renderSettings(document.getElementById('content'));
 }
 
 async function clearRetention(){
@@ -2046,9 +2148,8 @@ async function saveUpdatePolicy(){
     },
   };
   if(document.getElementById('up-exempt'))body.exempt=gc('up-exempt');
-  const r=await api('/api/update-policy'+policyScopeQS(),{method:'PUT',body:JSON.stringify(body)});
-  if(r.ok){alert('Update policy saved.');renderSettings(document.getElementById('content'));}
-  else{const d=await r.json().catch(()=>({detail:'Error'}));alert('Failed: '+d.detail);}
+  const result=await saveLayeredPolicy('/api/update-policy',body);
+  if(reportSaveResult(result,'Update Policy'))renderSettings(document.getElementById('content'));
 }
 
 async function clearUpdatePolicy(){
@@ -2077,9 +2178,8 @@ async function saveExclusionPolicy(){
     processes:parseExclLines(gv('excl-procs'),'process'),
   };
   if(document.getElementById('excl-exempt'))body.exempt=gc('excl-exempt');
-  const r=await api('/api/exclusion-policy'+policyScopeQS(),{method:'PUT',body:JSON.stringify(body)});
-  if(r.ok){alert('Exclusion policy saved.');renderSettings(document.getElementById('content'));}
-  else{const d=await r.json().catch(()=>({detail:'Error'}));alert('Failed: '+d.detail);}
+  const result=await saveLayeredPolicy('/api/exclusion-policy',body);
+  if(reportSaveResult(result,'Exclusion Policy'))renderSettings(document.getElementById('content'));
 }
 
 async function clearExclusionPolicy(){
@@ -2097,9 +2197,8 @@ async function saveTelemetryPolicy(){
     browsing_history:{enabled:gc('tel-bh-en'),max_entries_per_browser:parseInt(gv('tel-bh-max'))||500},
   };
   if(document.getElementById('tel-exempt'))body.exempt=gc('tel-exempt');
-  const r=await api('/api/telemetry-policy'+policyScopeQS(),{method:'PUT',body:JSON.stringify(body)});
-  if(r.ok){alert('Telemetry policy saved.');renderSettings(document.getElementById('content'));}
-  else{const d=await r.json().catch(()=>({detail:'Error'}));alert('Failed: '+d.detail);}
+  const result=await saveLayeredPolicy('/api/telemetry-policy',body);
+  if(reportSaveResult(result,'Telemetry Policy'))renderSettings(document.getElementById('content'));
 }
 
 async function clearTelemetryPolicy(){
@@ -2124,9 +2223,21 @@ async function saveUebaPolicy(){
       off_hours:gc('ub-s-hours'),
     },
   };
-  const r=await api('/api/ueba-policy'+settingsSiteQS(),{method:'PUT',body:JSON.stringify(body)});
-  if(r.ok){alert('UEBA policy saved.');renderSettings(document.getElementById('content'));}
-  else{const d=await r.json().catch(()=>({detail:'Error'}));alert('Failed: '+d.detail);}
+  // UEBA policy is site-only (no group/device drill-down — see main.py's
+  // _get_ueba_policy docstring), so this always saves at the OEM/site
+  // level via currentTargetSites() regardless of any group/device
+  // drilled into on another card.
+  const targets=currentTargetSites();
+  if(!targets.length){alert('Select at least one organization first.');return;}
+  let ok=0,fail=0,detail=[];
+  for(const site of targets){
+    const qs=site?`?site=${encodeURIComponent(site)}`:'';
+    try{
+      const r=await api('/api/ueba-policy'+qs,{method:'PUT',body:JSON.stringify(body)});
+      if(r.ok)ok++;else{fail++;const d=await r.json().catch(()=>({detail:'Error'}));detail.push(`${site||'OEM Default'}: ${d.detail}`);}
+    }catch(ex){fail++;detail.push(`${site||'OEM Default'}: ${ex}`);}
+  }
+  if(reportSaveResult({ok,fail,detail},'UEBA Policy'))renderSettings(document.getElementById('content'));
 }
 
 async function clearUebaPolicy(){
@@ -2137,7 +2248,7 @@ async function clearUebaPolicy(){
 }
 
 async function runRetentionNow(btn){
-  const scopeMsg=_user?.role==='oem_admin'&&!_siteCtx?'every registered organization':(_siteCtx?`"${_siteCtx}"`:'your organization');
+  const scopeMsg=_user?.role==='oem_admin'&&_siteMode!=='single'?'every registered organization':(_siteCtx?`"${_siteCtx}"`:'your organization');
   if(!confirm(`Run the cloud-side retention sweep now for ${scopeMsg}? Depending on the saved policy this may permanently delete or move data. Continue?`))return;
   btn.disabled=true;const orig=btn.textContent;btn.textContent='Running...';
   try{

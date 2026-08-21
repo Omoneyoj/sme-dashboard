@@ -566,6 +566,14 @@ def fetch_status() -> list:
                 "wu_pending_count":       wu.get("pending_count"),
                 "wu_critical_count":      wu.get("critical_pending_count"),
                 "wu_pending_reboot":      wu.get("pending_reboot"),
+                # Titles (capped) so the dashboard can show WHICH update
+                # is pending, not just a bare count — "1 pending" on its
+                # own answers nothing. Capped at 5 to keep this cheap on
+                # every /api/status poll; the full list (with KB numbers,
+                # size, reboot-required) is still available via
+                # fetch_device_detail's modules.updates.raw for anyone
+                # who needs more than the headline.
+                "wu_pending_titles":      [u.get("title") for u in (wu.get("pending_updates") or [])[:5] if u.get("title")],
                 "app_upgrade_count":      au.get("upgrade_count"),
                 "app_approved_pending":   au.get("approved_pending_count"),
             }
